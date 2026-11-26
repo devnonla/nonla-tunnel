@@ -301,11 +301,11 @@ fn credential_store(cfg: &config::ServerConfig) -> credentials::CredentialStore 
 
 /// `--server …` arguments a client needs for this deployment.
 fn connect_args(cfg: &config::ServerConfig) -> String {
-    if cfg.traefik.enabled {
-        format!("--server connect.{}:443", cfg.domain)
-    } else {
-        format!("--server {}:{} --no-tls", cfg.domain, cfg.control_port)
-    }
+    let (server, flags) = cfg.client_endpoint();
+    std::iter::once(format!("--server {}", server))
+        .chain(flags)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn cmd_invite(args: InviteArgs) -> Result<()> {
@@ -326,12 +326,19 @@ fn cmd_invite(args: InviteArgs) -> Result<()> {
     );
     eprintln!();
     eprintln!("Give the agent one of:");
+    eprintln!("  Linux / macOS:");
     eprintln!(
-        "  curl -sSL https://{}/install | bash -s -- --invite {}",
+        "    curl -fsSL https://{}/install | sh -s -- --invite {}",
         cfg.domain, code
     );
+    eprintln!("  Windows (PowerShell):");
     eprintln!(
-        "  nonla-tunnel enroll {} --invite {}   # if already installed",
+        "    $env:NONLA_INVITE='{}'; irm https://{}/install.ps1 | iex",
+        code, cfg.domain
+    );
+    eprintln!("  Already installed:");
+    eprintln!(
+        "    nonla-tunnel enroll {} --invite {}",
         connect_args(&cfg),
         code
     );
@@ -508,9 +515,6 @@ fn apply_env_overrides(cfg: &mut config::ServerConfig) {
     }
     if std::env::var("NONLA_TRAEFIK_ENABLED").ok().as_deref() == Some("true") {
         cfg.traefik.enabled = true;
-    }
-    if let Ok(dir) = std::env::var("NONLA_CLIENTS_DIR") {
-        cfg.clients_dir = dir;
     }
     if let Ok(addr) = std::env::var("NONLA_BIND_ADDR") {
         if !addr.is_empty() {

@@ -459,18 +459,17 @@ impl Server {
         };
 
         // ── Client install endpoint (apex host) ──
-        let connect_hint = if self.config.traefik.enabled {
-            format!("--server connect.{}:443", domain)
-        } else {
-            format!("--server {}:{} --no-tls", domain, self.config.control_port)
-        };
+        let (server, enroll_flags) = self.config.client_endpoint();
         let install_state = InstallState {
-            domain: domain.clone(),
-            connect_hint,
-            clients_dir: self.config.clients_dir.clone(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            server,
+            enroll_flags,
         };
 
-        tracing::info!("📦 Client install: https://{}/install", domain);
+        tracing::info!(
+            "📦 Client install: https://{0}/install (Linux/macOS), https://{0}/install.ps1 (Windows)",
+            domain
+        );
 
         // ── Spawn control channel acceptor ──
         let ctx = Arc::new(ControlCtx {
@@ -1055,7 +1054,7 @@ impl Server {
                             .unwrap_or("");
                         let host_no_port = host.split(':').next().unwrap_or(host);
 
-                        // Install/download on the apex host only
+                        // Installers on the apex host only
                         if host_no_port == dom {
                             Self::handle_install(req, inst).await
                         } else {

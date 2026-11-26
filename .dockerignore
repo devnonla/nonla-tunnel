@@ -1,0 +1,7 @@
+target/
+.git/
+.cursor/
+.env
+plugins/
+*.md
+!scripts/**

@@ -46,3 +46,23 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+  cross-os:
+    name: Client tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # The server is Linux-only (Docker); the client and protocol must work everywhere.
+      - name: Clippy
+        run: cargo clippy --locked -p nonla-tunnel-client -p nonla-tunnel-protocol --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked -p nonla-tunnel-client -p nonla-tunnel-protocol
+

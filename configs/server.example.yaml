@@ -26,6 +26,5 @@ traefik:
 # credentials_file: "/etc/nonla-tunnel/credentials.json"  # invites + issued credentials
 # admin_socket: "/etc/nonla-tunnel/admin.sock"            # used by `sessions` / `kick`
 
-clients_dir: "/var/lib/nonla-tunnel/clients"
 
 log_level: "info"

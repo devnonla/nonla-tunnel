@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Prebuilt clients for **every major platform**: Linux x86_64/arm64 (static musl — runs on any distro incl. Alpine), macOS Apple Silicon/Intel, Windows x86_64/arm64
+- Windows support in the client: background tunnels (`-d`), `status`, `stop`, `upgrade`, `uninstall`
+- `install.ps1` for Windows; server serves it at `https://<domain>/install.ps1`
+- **Claude Code plugin** (`/plugin marketplace add devnonla/nonla-tunnel`) with a skill to install, enroll and use `nonla-tunnel`
+- `nonla-tunnel upgrade --version X.Y.Z`; installers accept `--version`, `--dir`, `--no-modify-path` and `NONLA_DOWNLOAD_BASE` (mirror)
+- CI runs client tests on macOS and Windows
+
+### Changed
+
+- One installer for everything: `scripts/install.sh` (POSIX sh, works without bash/curl) is what the server serves at `/install`, with its version and address filled in. Binaries always come from GitHub Releases and are checksum-verified; no more build-from-source fallback
+- Releases ship plain binaries (`nonla-tunnel-<os>-<arch>[.exe]`) + `SHA256SUMS.txt` instead of tarballs
+- `upgrade`/`uninstall` no longer shell out to curl/tar/sudo; `uninstall` stops background tunnels and removes the installer's PATH entry
+- The server image no longer bundles client binaries (`/download` and `NONLA_CLIENTS_DIR` removed)
+
 ## [0.1.0] - 2026-11-26
 
 Initial release of **Nonla Tunnel**: self-hosted, CLI-only HTTP tunnels for agents, behind your own Traefik.

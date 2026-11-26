@@ -1,0 +1,17 @@
+{
+  "name": "nonla-tunnel",
+  "description": "Claude Code plugin for Nonla Tunnel — expose local HTTP apps through your own server",
+  "owner": {
+    "name": "devnonla",
+    "url": "https://github.com/devnonla"
+  },
+  "plugins": [
+    {
+      "name": "nonla-tunnel",
+      "source": "./plugins/nonla-tunnel",
+      "description": "Install, enroll and use the nonla-tunnel CLI to give local apps a public HTTPS URL",
+      "category": "development",
+      "tags": ["tunnel", "localhost", "https", "webhooks", "cli"]
+    }
+  ]
+}

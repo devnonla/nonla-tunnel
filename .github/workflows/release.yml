@@ -48,18 +48,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            label: linux-amd64
-
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            label: linux-arm64
-            cross: true
-
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            label: darwin-arm64
+          - { target: x86_64-unknown-linux-musl,  os: ubuntu-24.04,     label: linux-amd64,   ext: "",     musl: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, label: linux-arm64,   ext: "",     musl: true }
+          - { target: aarch64-apple-darwin,       os: macos-latest,     label: darwin-arm64,  ext: "" }
+          - { target: x86_64-apple-darwin,        os: macos-latest,     label: darwin-amd64,  ext: "",     cross: true }
+          - { target: x86_64-pc-windows-msvc,     os: windows-latest,   label: windows-amd64, ext: ".exe" }
+          - { target: aarch64-pc-windows-msvc,    os: windows-11-arm,   label: windows-arm64, ext: ".exe" }
 
     steps:
       - uses: actions/checkout@v6
@@ -72,30 +66,43 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Install cross-compiler (Linux ARM64)
-        if: matrix.cross
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+      # Static musl binaries run on any Linux (glibc distros, Alpine, scratch).
+      - name: Install musl tools
+        if: matrix.musl
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
 
-      - name: Build nonla-tunnel client
+      # ring needs clang for aarch64 Windows.
+      - name: Ensure clang (Windows ARM64)
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
         run: |
-          cargo build --release --target ${{ matrix.target }} --bin nonla-tunnel
+          if (-not (Get-Command clang -ErrorAction SilentlyContinue)) {
+            choco install llvm -y --no-progress
+            "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          }
 
-      - name: Package binary
+      - name: Build nonla-tunnel
+        shell: bash
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin nonla-tunnel
+
+      - name: Package
+        shell: bash
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          BIN="target/${{ matrix.target }}/release/nonla-tunnel"
-          TAR="nonla-tunnel-${TAG}-${{ matrix.label }}.tar.gz"
-          tar -czf "$TAR" -C "target/${{ matrix.target }}/release" nonla-tunnel
-          cp "$BIN" "nonla-tunnel-${{ matrix.label }}"
-          echo "📦 $TAR ($(du -h "$TAR" | cut -f1))"
+          OUT="nonla-tunnel-${{ matrix.label }}${{ matrix.ext }}"
+          cp "target/${{ matrix.target }}/release/nonla-tunnel${{ matrix.ext }}" "$OUT"
+          ls -l "$OUT"
 
-      - name: Upload artifacts
+      - name: Smoke test
+        if: ${{ !matrix.cross }}
+        shell: bash
+        run: ./nonla-tunnel-${{ matrix.label }}${{ matrix.ext }} --version
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.label }}
-          path: |
-            *.tar.gz
-            nonla-tunnel-${{ matrix.label }}
+          path: nonla-tunnel-${{ matrix.label }}${{ matrix.ext }}
+          if-no-files-found: error
           retention-days: 1
 
   release:
@@ -113,7 +120,7 @@ jobs:
 
       - name: Generate checksums
         working-directory: dist
-        run: sha256sum *.tar.gz nonla-tunnel-* > SHA256SUMS.txt || sha256sum *.tar.gz > SHA256SUMS.txt
+        run: sha256sum nonla-tunnel-* > SHA256SUMS.txt && cat SHA256SUMS.txt
 
       - name: List release files
         run: ls -lh dist/
@@ -146,13 +153,22 @@ jobs:
 
             Image: `ghcr.io/devnonla/nonla-tunnel:${{ env.VERSION }}` (also `:latest`)
 
-            ## Install client
+            ## Install the client
 
-            Prefer the one-liner from your server:
+            Create an invite on the server (`nonla-tunnel-server invite --label my-agent`), then on the agent's machine:
 
             ```bash
-            curl -sSL https://YOUR_DOMAIN/install | bash
-            # invite from: nonla-tunnel-server invite --label my-agent
-            nonla-tunnel enroll --server connect.YOUR_DOMAIN --invite nti_...
-            nonla-tunnel http 3000
+            # Linux / macOS
+            curl -fsSL https://YOUR_DOMAIN/install | sh -s -- --invite nti_...
             ```
+
+            ```powershell
+            # Windows
+            $env:NONLA_INVITE='nti_...'; irm https://YOUR_DOMAIN/install.ps1 | iex
+            ```
+
+            Then `nonla-tunnel http 3000 --name my-app -d`.
+
+            Claude Code: `/plugin marketplace add devnonla/nonla-tunnel` → `/plugin install nonla-tunnel@nonla-tunnel`.
+
+            Binaries: Linux (static, amd64/arm64), macOS (Apple Silicon/Intel), Windows (amd64/arm64). Verify with `SHA256SUMS.txt`.

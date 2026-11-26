@@ -8,8 +8,6 @@
 //! └──────────┴──────────┴───────────┴──────────────────┘
 //! ```
 
-pub mod self_update;
-
 use anyhow::{bail, Context, Result};
 use bytes::{Buf, BufMut, BytesMut};
 use serde::{Deserialize, Serialize};

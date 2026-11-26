@@ -2,8 +2,6 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::fs::OpenOptions;
 use std::io::{Read, Seek, SeekFrom};
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command as ProcCommand, Stdio};
 use tokio::sync::watch;
@@ -12,6 +10,8 @@ use tracing_subscriber::EnvFilter;
 
 mod client;
 mod config;
+mod platform;
+mod update;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -36,8 +36,8 @@ enum Command {
     Status,
     /// Stop a background tunnel (or all)
     Stop(StopArgs),
-    /// Upgrade to the latest release
-    Upgrade,
+    /// Upgrade to the latest release (or --version X.Y.Z)
+    Upgrade(UpgradeArgs),
     /// Uninstall nonla-tunnel
     Uninstall(UninstallArgs),
 }
@@ -119,6 +119,13 @@ struct StopArgs {
 }
 
 #[derive(Parser, Debug)]
+struct UpgradeArgs {
+    /// Install this version (e.g. 0.1.0) instead of the latest release
+    #[arg(long)]
+    version: Option<String>,
+}
+
+#[derive(Parser, Debug)]
 struct UninstallArgs {
     #[arg(long, short)]
     yes: bool,
@@ -126,6 +133,7 @@ struct UninstallArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    update::cleanup_after_upgrade();
     let cli = Cli::parse();
     match cli.command {
         Command::Config(cmd) => cmd_config(cmd),
@@ -133,15 +141,15 @@ async fn main() -> Result<()> {
         Command::Http(args) => cmd_http(args).await,
         Command::Status => cmd_status(),
         Command::Stop(args) => cmd_stop(args),
-        Command::Upgrade => {
-            nonla_tunnel_protocol::self_update::upgrade("nonla-tunnel", env!("CARGO_PKG_VERSION"))
+        Command::Upgrade(args) => update::upgrade(args.version.as_deref()),
+        Command::Uninstall(args) => {
+            // Stop background tunnels first so nothing keeps running from
+            // the directory we are about to delete.
+            if !list_running_tunnels().unwrap_or_default().is_empty() {
+                cmd_stop(StopArgs { name: None })?;
+            }
+            update::uninstall(args.yes)
         }
-        Command::Uninstall(args) => nonla_tunnel_protocol::self_update::uninstall(
-            "nonla-tunnel",
-            nonla_tunnel_protocol::self_update::Component::Client,
-            args.yes,
-            false,
-        ),
     }
 }
 
@@ -159,45 +167,6 @@ fn log_path(name: &str) -> Result<PathBuf> {
     Ok(tunnels_dir()?.join(format!("{}.log", name)))
 }
 
-fn is_pid_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        unsafe { libc::kill(pid as i32, 0) == 0 }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        false
-    }
-}
-
-/// Whether `pid` is still our background tunnel `name` (guards against PID
-/// reuse: never signal a process that is not `nonla-tunnel ... --name <name> --daemon-child`).
-fn pid_is_tunnel(pid: u32, name: &str) -> bool {
-    let args: Vec<String> = if cfg!(target_os = "linux") {
-        match std::fs::read(format!("/proc/{}/cmdline", pid)) {
-            Ok(raw) => raw
-                .split(|b| *b == 0)
-                .map(|a| String::from_utf8_lossy(a).into_owned())
-                .collect(),
-            Err(_) => return false,
-        }
-    } else {
-        match ProcCommand::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "command="])
-            .output()
-        {
-            Ok(o) => String::from_utf8_lossy(&o.stdout)
-                .split_whitespace()
-                .map(String::from)
-                .collect(),
-            Err(_) => return false,
-        }
-    };
-    args.iter().any(|a| a == "--daemon-child")
-        && args.windows(2).any(|w| w[0] == "--name" && w[1] == name)
-}
-
 fn read_pid(name: &str) -> Result<Option<u32>> {
     if nonla_tunnel_protocol::validate_client_id(name).is_err() {
         return Ok(None);
@@ -211,7 +180,7 @@ fn read_pid(name: &str) -> Result<Option<u32>> {
     if pid == 0 {
         return Ok(None);
     }
-    if is_pid_alive(pid) && pid_is_tunnel(pid, name) {
+    if platform::is_pid_alive(pid) && platform::pid_is_tunnel(pid, name) {
         Ok(Some(pid))
     } else {
         let _ = std::fs::remove_file(&path);
@@ -370,7 +339,7 @@ fn cmd_status() -> Result<()> {
         Err(_) => {
             println!("nonla-tunnel v{}", env!("CARGO_PKG_VERSION"));
             println!(
-                "Not configured. Run: nonla-tunnel config set --server HOST:6200 --token TOKEN"
+                "Not configured. Run: nonla-tunnel enroll --server connect.<domain> --invite <nti_...>"
             );
         }
     }
@@ -408,10 +377,7 @@ fn cmd_stop(args: StopArgs) -> Result<()> {
     for name in targets {
         match read_pid(&name)? {
             Some(pid) => {
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGTERM);
-                }
+                platform::terminate(pid);
                 let _ = std::fs::remove_file(pid_path(&name)?);
                 println!("Stopped '{}' (pid {})", name, pid);
             }
@@ -447,15 +413,7 @@ fn spawn_detached(args: &HttpArgs, client_id: &str) -> Result<()> {
     cmd.stdout(Stdio::from(log_file));
     cmd.stderr(Stdio::from(log_err));
 
-    #[cfg(unix)]
-    unsafe {
-        cmd.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+    platform::detach(&mut cmd);
 
     let mut child = cmd.spawn().context("spawn background nonla-tunnel")?;
     let pid = child.id();

@@ -1,4 +1,5 @@
 //! nonla-tunnel client config — `~/.nonla-tunnel/config.yaml`
+//! (`%USERPROFILE%\.nonla-tunnel\config.yaml` on Windows).
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -21,10 +22,10 @@ pub struct NonlaTunnelConfig {
     pub tls: ClientTlsConfig,
 }
 
+/// `~/.nonla-tunnel` — config, claim keys, background tunnel state and the
+/// installed binary (`bin/`). Removing it removes everything.
 pub fn config_dir() -> anyhow::Result<PathBuf> {
-    let home =
-        std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME environment variable not set"))?;
-    Ok(PathBuf::from(home).join(".nonla-tunnel"))
+    Ok(crate::platform::home_dir()?.join(".nonla-tunnel"))
 }
 
 pub fn config_path() -> anyhow::Result<PathBuf> {
@@ -36,7 +37,7 @@ impl NonlaTunnelConfig {
         let path = config_path()?;
         if !path.exists() {
             anyhow::bail!(
-                "No config found at {}. Run: nonla-tunnel config set --server HOST:6200 --token TOKEN",
+                "No config found at {}. Run: nonla-tunnel enroll --server connect.<domain> --invite <nti_...>",
                 path.display()
             );
         }
@@ -47,11 +48,7 @@ impl NonlaTunnelConfig {
     pub fn save(&self) -> anyhow::Result<()> {
         let dir = config_dir()?;
         std::fs::create_dir_all(&dir)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-        }
+        crate::platform::restrict_dir(&dir)?;
         let path = config_path()?;
         write_private(&path, serde_yaml::to_string(self)?.as_bytes())?;
         Ok(())
@@ -79,19 +76,13 @@ impl NonlaTunnelConfig {
 /// Write a file with 0600 permissions (also tightens an existing file).
 pub fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        opts.mode(0o600);
-        let f = opts.open(path)?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
-        let mut f = f;
-        return f.write_all(data);
-    }
-    #[allow(unreachable_code)]
-    opts.open(path)?.write_all(data)
+    let mut f = crate::platform::private_open_options()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(path)?;
+    crate::platform::restrict_file(path)?;
+    f.write_all(data)
 }
 
 /// Per-name ownership key sent to the server (`~/.nonla-tunnel/claims/<name>.key`).
@@ -101,11 +92,7 @@ pub fn claim_key(name: &str) -> anyhow::Result<String> {
     nonla_tunnel_protocol::validate_client_id(name).map_err(|e| anyhow::anyhow!(e))?;
     let dir = config_dir()?.join("claims");
     std::fs::create_dir_all(&dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-    }
+    crate::platform::restrict_dir(&dir)?;
     let path = dir.join(format!("{}.key", name));
     if let Ok(existing) = std::fs::read_to_string(&path) {
         let k = existing.trim().to_string();
@@ -117,14 +104,11 @@ pub fn claim_key(name: &str) -> anyhow::Result<String> {
     getrandom::getrandom(&mut buf).map_err(|e| anyhow::anyhow!("getrandom: {e}"))?;
     let key: String = buf.iter().map(|b| format!("{:02x}", b)).collect();
     // create_new: if a parallel process created it first, use theirs.
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
+    match crate::platform::private_open_options()
+        .write(true)
+        .create_new(true)
+        .open(&path)
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    match opts.open(&path) {
         Ok(mut f) => {
             use std::io::Write;
             f.write_all(key.as_bytes())?;

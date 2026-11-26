@@ -27,4 +27,12 @@ tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }
 getrandom = "0.2"
 socket2 = { workspace = true }
+serde_json = { workspace = true }
+# HTTPS for `upgrade` (rustls + webpki roots, same TLS stack as the tunnel).
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }

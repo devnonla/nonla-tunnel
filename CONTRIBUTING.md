@@ -92,14 +92,14 @@ test: add subdomain routing tests
 ```
 nonla-tunnel/
 ├── crates/
-│   ├── nonla-tunnel-protocol/        # Wire protocol, name validation, self-update
+│   ├── nonla-tunnel-protocol/        # Wire protocol, name validation
 │   ├── nonla-tunnel-server/          # nonla-tunnel-server
 │   │   └── src/
 │   │       ├── main.rs               # CLI: start, token, invite, clients, revoke, sessions, kick, release-name
 │   │       ├── config.rs             # server.yaml + env overrides
 │   │       ├── server.rs             # Control channel: auth, enrollment, yamux, revocation, housekeeping
 │   │       ├── proxy.rs              # Public HTTP → tunnel (subdomain routing, limits)
-│   │       ├── install.rs            # /install script + /download binaries
+│   │       ├── install.rs            # /install + /install.ps1 (scripts/ with server defaults)
 │   │       ├── admin.rs              # Local admin socket (sessions, kick, release-name)
 │   │       ├── credentials.rs        # Invites + issued client credentials
 │   │       ├── claims.rs             # Tunnel name ownership
@@ -107,10 +107,12 @@ nonla-tunnel/
 │   │       ├── traefik.rs            # Traefik dynamic YAML
 │   │       ├── registry.rs           # Connected sessions
 │   │       └── metrics.rs            # Metrics, rate limiter, auth throttle
-│   └── nonla-tunnel-client/          # nonla-tunnel (enroll, config, http, status, stop, …)
+│   └── nonla-tunnel-client/          # nonla-tunnel (enroll, http, status, stop, upgrade, …)
+│       └── src/{platform,update}.rs  # Unix/Windows specifics; upgrade/uninstall
 ├── configs/                          # Example YAML configs
 ├── deploy/traefik/                   # Example Traefik static config
-├── scripts/                          # install.sh, pre-release.sh
+├── plugins/nonla-tunnel/             # Claude Code plugin (skill) — marketplace in .claude-plugin/
+├── scripts/                          # install.sh, install.ps1, pre-release.sh
 └── .github/                          # CI, release, image build, templates
 ```
 

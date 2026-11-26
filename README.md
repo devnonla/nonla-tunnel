@@ -69,14 +69,29 @@ On the server, create an invite (single use, expires in 24h by default):
 ```bash
 docker compose exec nonla-tunnel nonla-tunnel-server invite --label agent-1
 # nti_9233…
-# Give the agent one of:
-#   curl -sSL https://tunnel.example.com/install | bash -s -- --invite nti_9233…
-#   nonla-tunnel enroll --server connect.tunnel.example.com:443 --invite nti_9233…
 ```
 
-The agent runs the one-liner. It installs `nonla-tunnel`, connects over TLS and trades the invite for its own credential (`ntc_…`), which is the only thing saved to `~/.nonla-tunnel/config.yaml`. The invite is burned on first use, so a leaked/used invite is worthless.
+The agent installs and enrolls with one command:
 
-The Docker image ships a Linux client binary for the host arch. On macOS (or other platforms without a prebuilt binary), the install script downloads source from the server and builds `nonla-tunnel` with Cargo (installs Rust automatically if needed).
+```bash
+# Linux / macOS
+curl -fsSL https://tunnel.example.com/install | sh -s -- --invite nti_9233…
+```
+
+```powershell
+# Windows (PowerShell)
+$env:NONLA_INVITE='nti_9233…'; irm https://tunnel.example.com/install.ps1 | iex
+```
+
+The installer downloads the release binary for that OS/arch from GitHub Releases (same version as the server), verifies it against `SHA256SUMS.txt`, and installs it to `~/.nonla-tunnel/bin` (`%USERPROFILE%\.nonla-tunnel\bin` on Windows), adding that to `PATH`. It then connects over TLS and trades the invite for the agent's own credential (`ntc_…`), the only secret saved in `~/.nonla-tunnel/config.yaml`. The invite is burned on first use, so a leaked or used invite is worthless.
+
+| OS | Architectures |
+|---|---|
+| Linux (static binary: any distro, Alpine, containers) | x86_64, arm64 |
+| macOS | Apple Silicon, Intel |
+| Windows 10/11 | x86_64, arm64 |
+
+Installer options: `--server`, `--version`, `--dir`, `--no-modify-path` (PowerShell: `-Server`, `-Version`, `-InstallDir`, `-NoModifyPath`). `NONLA_DOWNLOAD_BASE=<url>` installs from a mirror holding the binaries + `SHA256SUMS.txt`. Without the server: `curl -fsSL https://raw.githubusercontent.com/devnonla/nonla-tunnel/main/scripts/install.sh | sh`.
 
 Manage credentials:
 
@@ -125,11 +140,22 @@ nonla-tunnel http 3000 [--name NAME]          # foreground (Ctrl+C to stop)
 nonla-tunnel http 3000 --name my-app -d       # background, exits when connected
 nonla-tunnel status                           # config + background tunnels
 nonla-tunnel stop [NAME]                      # stop background tunnel(s)
-nonla-tunnel upgrade
-nonla-tunnel uninstall --yes
+nonla-tunnel upgrade [--version X.Y.Z]        # checksum-verified, replaces the binary in place
+nonla-tunnel uninstall --yes                  # stops tunnels, removes ~/.nonla-tunnel and the PATH entry
 ```
 
-Client state lives in `~/.nonla-tunnel/` (all files `0600`): `config.yaml`, `claims/<name>.key`, and `tunnels/<name>.pid` / `tunnels/<name>.log` for background tunnels.
+Everything lives in `~/.nonla-tunnel/` (files `0600`): `bin/nonla-tunnel`, `config.yaml`, `claims/<name>.key`, and `tunnels/<name>.pid` / `.log` for background tunnels. Deleting that directory removes it all.
+
+## Claude Code plugin
+
+The repo is also a Claude Code plugin marketplace. The plugin's skill teaches Claude to install, enroll and use `nonla-tunnel` (open/stop tunnels, read the URL, handle errors, never leak credentials):
+
+```text
+/plugin marketplace add devnonla/nonla-tunnel
+/plugin install nonla-tunnel@nonla-tunnel
+```
+
+Then ask e.g. "share my app on port 3000 with nonla-tunnel" and give Claude your server domain + an invite. Update later with `/plugin marketplace update nonla-tunnel`.
 
 Tunnel names must be one lowercase DNS label: `a-z`, `0-9`, `-`, 1–63 chars, no leading/trailing `-`. `dashboard`, `connect`, `api`, `www`, `admin`, `install`, `download` are reserved.
 
@@ -138,7 +164,8 @@ Tunnel names must be one lowercase DNS label: `a-z`, `0-9`, `-`, 1–63 chars, n
 Setup, once (the operator gives you the invite):
 
 ```bash
-curl -sSL https://<domain>/install | bash -s -- --invite nti_…
+curl -fsSL https://<domain>/install | sh -s -- --invite nti_…
+# Windows:                 $env:NONLA_INVITE='nti_…'; irm https://<domain>/install.ps1 | iex
 # or, already installed:   nonla-tunnel enroll --server connect.<domain> --invite nti_…
 # or via env:              NONLA_INVITE=nti_… nonla-tunnel enroll --server connect.<domain>
 ```
@@ -171,13 +198,13 @@ nonla-tunnel http 3000 --name my-app -d
 - **Admin operations** (`sessions`, `kick`, `release-name`) go through a `0600` Unix socket; only the server's user (or root) can use them.
 - **Limits:** 128 concurrent requests per tunnel (`rate_limit.max_connections_per_client`, excess → `503`), 100 req/s per tunnel, 256 pending control connections (8 per IP), 5s to authenticate.
 - **Let's Encrypt quota:** each new tunnel name gets its own certificate via the cert resolver (Let's Encrypt allows ~50 new certificates per registered domain per week). Prefer stable `--name`s; routers idle for 24h are removed automatically. For many short-lived names, give Traefik a wildcard certificate for `*.<domain>` (DNS challenge) instead.
-- Downloads (`/install`, `scripts/install.sh`, `upgrade`) are verified against `SHA256SUMS`.
+- Installers and `upgrade` verify every binary against the release's `SHA256SUMS.txt` before installing it.
 
 ## Traefik
 
 nonla-tunnel only writes YAML into the Traefik dynamic directory:
 
-- `_nonla-tunnel-base.yml` — shared upstream + apex router (`<domain>` → `http://127.0.0.1:6210`, serves `/install` and `/download/*`) + TLS TCP router `connect.<domain>` → `127.0.0.1:6200`
+- `_nonla-tunnel-base.yml` — shared upstream + apex router (`<domain>` → `http://127.0.0.1:6210`, serves `/install` and `/install.ps1`) + TLS TCP router `connect.<domain>` → `127.0.0.1:6200`
 - `nonla-tunnel-{name}.yml` — per-client router, written on connect
 
 Client routers are kept on disconnect/restart so reconnects don't hit a 404 while Traefik reloads. Traefik provisions Let's Encrypt certificates per host. Uses `network_mode: host` so Traefik reaches `http://127.0.0.1:6210`.
@@ -193,7 +220,6 @@ See [`configs/server.example.yaml`](configs/server.example.yaml). Docker uses en
 | `DOMAIN` / `NONLA_DOMAIN` | Base domain |
 | `AUTH_TOKEN` / `NONLA_TOKEN` | Shared admin token (agents use invites) |
 | `TRAEFIK_DYNAMIC_DIR` | Host path to Traefik dynamic configs |
-| `NONLA_CLIENTS_DIR` | Client binaries for `/download` |
 | `NONLA_BIND_ADDR` | Listener address (default `127.0.0.1` with Traefik, else `0.0.0.0`) |
 
 ## Development

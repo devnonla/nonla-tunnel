@@ -1,0 +1,13 @@
+{
+  "name": "nonla-tunnel",
+  "version": "0.1.0",
+  "description": "Teaches Claude to install, enroll and use the nonla-tunnel CLI: expose a local HTTP port at https://<name>.<your-domain> through your own Nonla Tunnel server",
+  "author": {
+    "name": "devnonla",
+    "url": "https://github.com/devnonla"
+  },
+  "homepage": "https://github.com/devnonla/nonla-tunnel",
+  "repository": "https://github.com/devnonla/nonla-tunnel",
+  "license": "MIT",
+  "keywords": ["tunnel", "localhost", "https", "ngrok-alternative", "self-hosted", "cli"]
+}

@@ -69,10 +69,6 @@ pub struct ServerConfig {
     #[serde(default)]
     pub traefik: crate::traefik::TraefikConfig,
 
-    /// Directory containing client binaries served at /download/
-    #[serde(default = "default_clients_dir")]
-    pub clients_dir: String,
-
     #[serde(default = "default_log_level")]
     pub log_level: String,
 
@@ -129,9 +125,6 @@ fn default_public_port() -> u16 {
 fn default_log_level() -> String {
     "info".into()
 }
-fn default_clients_dir() -> String {
-    "/var/lib/nonla-tunnel/clients".into()
-}
 fn default_rps() -> u32 {
     100
 }
@@ -148,7 +141,6 @@ impl Default for ServerConfig {
             auth: AuthConfig::default(),
             rate_limit: RateLimitConfig::default(),
             traefik: crate::traefik::TraefikConfig::default(),
-            clients_dir: default_clients_dir(),
             log_level: default_log_level(),
             bind_addr: None,
             claims_file: None,
@@ -199,6 +191,20 @@ impl ServerConfig {
             tracing::warn!("⚠️  Could not chmod 600 {}: {}", path.display(), e);
         }
         Ok(config)
+    }
+
+    /// Where clients connect: `(address, extra enroll/config flags)`.
+    /// With Traefik: TLS on `connect.<domain>:443`; without: plaintext on
+    /// the control port (development).
+    pub fn client_endpoint(&self) -> (String, Vec<String>) {
+        if self.traefik.enabled {
+            (format!("connect.{}:443", self.domain), vec![])
+        } else {
+            (
+                format!("{}:{}", self.domain, self.control_port),
+                vec!["--no-tls".into()],
+            )
+        }
     }
 
     /// Effective bind address for both listeners.

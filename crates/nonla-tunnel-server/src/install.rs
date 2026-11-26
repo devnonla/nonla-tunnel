@@ -1,210 +1,129 @@
-//! Client distribution on the apex host: `GET /install` (shell script) and
-//! `GET /download/:filename` (prebuilt client binaries). No UI, no auth.
+//! Client installers on the apex host:
+//!
+//! - `GET /install` (alias `/install.sh`) — POSIX sh installer for Linux/macOS
+//! - `GET /install.ps1` — PowerShell installer for Windows
+//!
+//! Both are the repo's `scripts/install.{sh,ps1}` with this server's version
+//! and control address filled in, so `curl -fsSL https://<domain>/install | sh
+//! -s -- --invite …` installs the matching client and enrolls it. Binaries
+//! come from GitHub Releases and are checksum-verified by the script.
 
 use axum::extract::State;
 use axum::http::{header, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 
+const INSTALL_SH: &str = include_str!("../../../scripts/install.sh");
+const INSTALL_PS1: &str = include_str!("../../../scripts/install.ps1");
+
 #[derive(Clone)]
 pub struct InstallState {
-    pub domain: String,
-    /// `config set` arguments for this server, e.g. `--server connect.<domain>:443`.
-    pub connect_hint: String,
-    pub clients_dir: String,
+    /// Client version to install (this server's version).
+    pub version: String,
+    /// Control address clients enroll against, e.g. `connect.example.com:443`.
+    pub server: String,
+    /// Extra `enroll` flags, e.g. `--no-tls` when Traefik is not in front.
+    pub enroll_flags: Vec<String>,
 }
 
 pub fn create_router(state: InstallState) -> Router {
     Router::new()
-        .route("/install", get(serve_install_script))
-        .route("/download/:filename", get(serve_download))
+        .route("/install", get(serve_sh))
+        .route("/install.sh", get(serve_sh))
+        .route("/install.ps1", get(serve_ps1))
         .with_state(state)
 }
 
-async fn serve_install_script(State(state): State<InstallState>) -> impl IntoResponse {
+/// Replace exactly one `from` line; the scripts' placeholders are fixed text.
+fn set_line(script: &str, from: &str, to: &str) -> String {
+    debug_assert!(script.contains(from), "placeholder {from:?} missing");
+    script.replacen(from, to, 1)
+}
+
+pub fn render_sh(state: &InstallState) -> String {
+    // Values are a version string and a validated DNS name + port: no quoting issues.
+    let s = set_line(
+        INSTALL_SH,
+        "NONLA_DEFAULT_VERSION=\"\"",
+        &format!("NONLA_DEFAULT_VERSION=\"{}\"", state.version),
+    );
+    let s = set_line(
+        &s,
+        "NONLA_DEFAULT_SERVER=\"\"",
+        &format!("NONLA_DEFAULT_SERVER=\"{}\"", state.server),
+    );
+    set_line(
+        &s,
+        "NONLA_DEFAULT_ENROLL_FLAGS=\"\"",
+        &format!(
+            "NONLA_DEFAULT_ENROLL_FLAGS=\"{}\"",
+            state.enroll_flags.join(" ")
+        ),
+    )
+}
+
+pub fn render_ps1(state: &InstallState) -> String {
+    let s = set_line(
+        INSTALL_PS1,
+        "$NonlaDefaultVersion = ''",
+        &format!("$NonlaDefaultVersion = '{}'", state.version),
+    );
+    let s = set_line(
+        &s,
+        "$NonlaDefaultServer = ''",
+        &format!("$NonlaDefaultServer = '{}'", state.server),
+    );
+    let flags = state
+        .enroll_flags
+        .iter()
+        .map(|f| format!("'{}'", f))
+        .collect::<Vec<_>>()
+        .join(",");
+    set_line(
+        &s,
+        "$NonlaDefaultEnrollFlags = @()",
+        &format!("$NonlaDefaultEnrollFlags = @({})", flags),
+    )
+}
+
+async fn serve_sh(State(state): State<InstallState>) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/x-shellscript; charset=utf-8")],
+        render_sh(&state),
+    )
+}
+
+async fn serve_ps1(State(state): State<InstallState>) -> impl IntoResponse {
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-        render_install_script(&state),
+        render_ps1(&state),
     )
-}
-
-fn render_install_script(state: &InstallState) -> String {
-    format!(
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-
-# Usage: curl -sSL https://{domain}/install | bash -s -- [--invite nti_...]
-INVITE="${{NONLA_INVITE:-}}"
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --invite) INVITE="${{2:-}}"; shift 2 ;;
-    --invite=*) INVITE="${{1#*=}}"; shift ;;
-    *) echo "Unknown option: $1"; exit 1 ;;
-  esac
-done
-
-DOMAIN="{domain}"
-BASE="https://${{DOMAIN}}"
-INSTALL_DIR="$HOME/.nonla-tunnel/bin"
-CURL="curl --proto =https --tlsv1.2 -fsSL"
-mkdir -p "$INSTALL_DIR"
-
-OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-ARCH="$(uname -m)"
-case "$OS" in
-  linux) OS_LABEL=linux ;;
-  darwin) OS_LABEL=darwin ;;
-  *) echo "Unsupported OS: $OS"; exit 1 ;;
-esac
-case "$ARCH" in
-  x86_64|amd64) ARCH_LABEL=amd64 ;;
-  aarch64|arm64) ARCH_LABEL=arm64 ;;
-  *) echo "Unsupported arch: $ARCH"; exit 1 ;;
-esac
-
-FILE="nonla-tunnel-${{OS_LABEL}}-${{ARCH_LABEL}}"
-SRC_FILE="nonla-tunnel-src.tar.gz"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
-
-sha256() {{
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
-  else shasum -a 256 "$1" | cut -d' ' -f1; fi
-}}
-
-# Verify $1 (downloaded as $2) against the server's SHA256SUMS.
-verify() {{
-  if ! $CURL "${{BASE}}/download/SHA256SUMS" -o "$TMP/SHA256SUMS"; then
-    echo "❌ ${{BASE}}/download/SHA256SUMS not available — refusing to install unverified binary"
-    exit 1
-  fi
-  want="$(awk -v f="$1" '$2 == f || $2 == "*"f {{ print $1 }}' "$TMP/SHA256SUMS" | head -1)"
-  got="$(sha256 "$2")"
-  if [ -z "$want" ] || [ "$want" != "$got" ]; then
-    echo "❌ Checksum mismatch for $1 (want ${{want:-none}}, got $got)"
-    exit 1
-  fi
-  echo "▸ Checksum OK"
-}}
-
-install_from_source() {{
-  echo "▸ Prebuilt binary not available for ${{OS_LABEL}}-${{ARCH_LABEL}}"
-  echo "▸ Building nonla-tunnel from source (needs Rust + network)..."
-  $CURL "${{BASE}}/download/${{SRC_FILE}}" -o "$TMP/src.tar.gz"
-  verify "$SRC_FILE" "$TMP/src.tar.gz"
-  if ! command -v cargo >/dev/null 2>&1; then
-    echo "▸ Installing Rust toolchain..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-    # shellcheck disable=SC1091
-    source "$HOME/.cargo/env"
-  fi
-  mkdir -p "$TMP/src"
-  tar -xzf "$TMP/src.tar.gz" -C "$TMP/src"
-  cargo build --release --manifest-path "$TMP/src/Cargo.toml" -p nonla-tunnel-client
-  install -m 755 "$TMP/src/target/release/nonla-tunnel" "$INSTALL_DIR/nonla-tunnel"
-}}
-
-echo "▸ Downloading ${{FILE}}..."
-if $CURL "${{BASE}}/download/${{FILE}}" -o "$TMP/$FILE"; then
-  verify "$FILE" "$TMP/$FILE"
-  install -m 755 "$TMP/$FILE" "$INSTALL_DIR/nonla-tunnel"
-else
-  install_from_source
-fi
-
-SHELL_RC=""
-case "${{SHELL:-}}" in
-  */zsh) SHELL_RC="$HOME/.zshrc" ;;
-  */bash) SHELL_RC="$HOME/.bashrc" ;;
-  *) SHELL_RC="$HOME/.profile" ;;
-esac
-if [ -n "$SHELL_RC" ] && ! grep -q '.nonla-tunnel/bin' "$SHELL_RC" 2>/dev/null; then
-  echo 'export PATH="$HOME/.nonla-tunnel/bin:$PATH"' >> "$SHELL_RC"
-fi
-export PATH="$INSTALL_DIR:$PATH"
-
-echo "✅ nonla-tunnel installed to $INSTALL_DIR/nonla-tunnel"
-echo
-
-if [ -n "$INVITE" ]; then
-  echo "▸ Enrolling with one-time invite..."
-  NONLA_INVITE="$INVITE" "$INSTALL_DIR/nonla-tunnel" enroll {connect_hint}
-  echo
-  echo "Next:"
-  echo "  nonla-tunnel http 3000 --name my-app -d"
-else
-  echo "Next (invite from: nonla-tunnel-server invite):"
-  echo "  nonla-tunnel enroll {connect_hint} --invite <nti_...>"
-  echo "  nonla-tunnel http 3000 --name my-app -d"
-fi
-"#,
-        domain = state.domain,
-        connect_hint = state.connect_hint,
-    )
-}
-
-async fn serve_download(
-    State(state): State<InstallState>,
-    axum::extract::Path(filename): axum::extract::Path<String>,
-) -> Result<Response, (StatusCode, String)> {
-    if !filename
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-        || filename.contains("..")
-    {
-        return Err((StatusCode::BAD_REQUEST, "invalid filename".to_string()));
-    }
-
-    let path = std::path::Path::new(&state.clients_dir).join(&filename);
-    let (path, disposition) = if path.is_file() {
-        (path, filename.clone())
-    } else {
-        let alt = std::path::Path::new(&state.clients_dir).join(format!("{}.tar.gz", filename));
-        if alt.is_file() {
-            let name = alt.file_name().unwrap().to_string_lossy().into_owned();
-            (alt, name)
-        } else {
-            return Err((StatusCode::NOT_FOUND, format!("{} not found", filename)));
-        }
-    };
-
-    let data = std::fs::read(&path).map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("read error: {}", e),
-        )
-    })?;
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/octet-stream")
-        .header(
-            header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{}\"", disposition),
-        )
-        .body(axum::body::Body::from(data))
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn script() -> String {
-        render_install_script(&InstallState {
-            domain: "t.example.com".into(),
-            connect_hint: "--server connect.t.example.com:443".into(),
-            clients_dir: "/nonexistent".into(),
-        })
+    fn state(flags: &[&str]) -> InstallState {
+        InstallState {
+            version: "0.1.0".into(),
+            server: "connect.t.example.com:443".into(),
+            enroll_flags: flags.iter().map(|s| s.to_string()).collect(),
+        }
     }
 
     #[test]
-    fn install_script_is_valid_bash() {
+    fn sh_has_server_defaults_and_is_valid() {
+        let s = render_sh(&state(&[]));
+        assert!(s.contains("NONLA_DEFAULT_VERSION=\"0.1.0\""));
+        assert!(s.contains("NONLA_DEFAULT_SERVER=\"connect.t.example.com:443\""));
+        assert!(s.contains("NONLA_DEFAULT_ENROLL_FLAGS=\"\""));
         let path = std::env::temp_dir().join(format!("nonla-install-{}.sh", uuid::Uuid::new_v4()));
-        std::fs::write(&path, script()).unwrap();
-        let ok = std::process::Command::new("bash")
+        std::fs::write(&path, &s).unwrap();
+        let ok = std::process::Command::new("sh")
             .arg("-n")
             .arg(&path)
             .status()
@@ -215,21 +134,28 @@ mod tests {
     }
 
     #[test]
-    fn install_script_parses_invite_arg() {
-        // Run only the argument-parsing prefix of the script.
-        let s = script();
-        let prefix = &s[..s.find("DOMAIN=").unwrap()];
-        for args in [&["--invite", "nti_abc"][..], &["--invite=nti_abc"][..]] {
-            let out = std::process::Command::new("bash")
+    fn sh_parses_options() {
+        // Run only the option parsing part of the script.
+        let s = render_sh(&state(&[]));
+        let end = s.find("# --- platform").unwrap();
+        let prefix = &s[..end];
+        for args in [
+            &["--invite", "nti_abc", "--server", "x.example.com"][..],
+            &["--invite=nti_abc", "--server=x.example.com"][..],
+        ] {
+            let out = std::process::Command::new("sh")
                 .arg("-c")
-                .arg(format!("{prefix}\necho \"$INVITE\""))
+                .arg(format!("{prefix}\necho \"$INVITE $SERVER $VERSION\""))
                 .arg("install")
                 .args(args)
                 .output()
                 .unwrap();
-            assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "nti_abc");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout).trim(),
+                "nti_abc x.example.com 0.1.0"
+            );
         }
-        let out = std::process::Command::new("bash")
+        let out = std::process::Command::new("sh")
             .arg("-c")
             .arg(format!("{prefix}\necho ok"))
             .arg("install")
@@ -240,10 +166,28 @@ mod tests {
     }
 
     #[test]
-    fn install_script_enrolls_with_connect_hint() {
-        let s = script();
-        assert!(s.contains("enroll --server connect.t.example.com:443"));
-        // Passed via env so the invite is not visible in `ps`.
-        assert!(s.contains("NONLA_INVITE=\"$INVITE\""));
+    fn ps1_has_server_defaults() {
+        let s = render_ps1(&state(&["--no-tls"]));
+        assert!(s.contains("$NonlaDefaultVersion = '0.1.0'"));
+        assert!(s.contains("$NonlaDefaultServer = 'connect.t.example.com:443'"));
+        assert!(s.contains("$NonlaDefaultEnrollFlags = @('--no-tls')"));
+    }
+
+    #[test]
+    fn placeholders_exist_in_repo_scripts() {
+        for p in [
+            "NONLA_DEFAULT_VERSION=\"\"",
+            "NONLA_DEFAULT_SERVER=\"\"",
+            "NONLA_DEFAULT_ENROLL_FLAGS=\"\"",
+        ] {
+            assert_eq!(INSTALL_SH.matches(p).count(), 1, "{p}");
+        }
+        for p in [
+            "$NonlaDefaultVersion = ''",
+            "$NonlaDefaultServer = ''",
+            "$NonlaDefaultEnrollFlags = @()",
+        ] {
+            assert_eq!(INSTALL_PS1.matches(p).count(), 1, "{p}");
+        }
     }
 }

@@ -35,7 +35,7 @@ jobs:
             label: linux-arm64
 
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-latest
             label: darwin-arm64
 
     steps:

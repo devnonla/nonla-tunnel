@@ -76,17 +76,17 @@ jobs:
         if: matrix.cross
         run: sudo apt-get update -qq && sudo apt-get install -y -qq gcc-aarch64-linux-gnu
 
-      - name: Build zotunnel client
+      - name: Build nonla-tunnel client
         run: |
-          cargo build --release --target ${{ matrix.target }} --bin zotunnel
+          cargo build --release --target ${{ matrix.target }} --bin nonla-tunnel
 
       - name: Package binary
         run: |
           TAG="${GITHUB_REF_NAME}"
-          BIN="target/${{ matrix.target }}/release/zotunnel"
-          TAR="zotunnel-${TAG}-${{ matrix.label }}.tar.gz"
-          tar -czf "$TAR" -C "target/${{ matrix.target }}/release" zotunnel
-          cp "$BIN" "zotunnel-${{ matrix.label }}"
+          BIN="target/${{ matrix.target }}/release/nonla-tunnel"
+          TAR="nonla-tunnel-${TAG}-${{ matrix.label }}.tar.gz"
+          tar -czf "$TAR" -C "target/${{ matrix.target }}/release" nonla-tunnel
+          cp "$BIN" "nonla-tunnel-${{ matrix.label }}"
           echo "📦 $TAR ($(du -h "$TAR" | cut -f1))"
 
       - name: Upload artifacts
@@ -95,7 +95,7 @@ jobs:
           name: binaries-${{ matrix.label }}
           path: |
             *.tar.gz
-            zotunnel-${{ matrix.label }}
+            nonla-tunnel-${{ matrix.label }}
           retention-days: 1
 
   release:
@@ -113,10 +113,13 @@ jobs:
 
       - name: Generate checksums
         working-directory: dist
-        run: sha256sum *.tar.gz zotunnel-* > SHA256SUMS.txt || sha256sum *.tar.gz > SHA256SUMS.txt
+        run: sha256sum *.tar.gz nonla-tunnel-* > SHA256SUMS.txt || sha256sum *.tar.gz > SHA256SUMS.txt
 
       - name: List release files
         run: ls -lh dist/
+
+      - name: Version without "v" (image tag)
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
@@ -125,36 +128,31 @@ jobs:
           files: |
             dist/*
           body: |
-            ## Deploy server (Docker Hub)
+            ## Deploy server
 
             No need to clone or build from source:
 
             ```bash
-            mkdir -p zo-tunnel && cd zo-tunnel
+            mkdir -p nonla-tunnel && cd nonla-tunnel
             curl -fsSL -o docker-compose.yml \
-              https://raw.githubusercontent.com/phamvanquyit/ZoTunnel/main/docker-compose.yml
+              https://raw.githubusercontent.com/devnonla/nonla-tunnel/${{ github.ref_name }}/docker-compose.yml
             curl -fsSL -o .env.example \
-              https://raw.githubusercontent.com/phamvanquyit/ZoTunnel/main/.env.example
+              https://raw.githubusercontent.com/devnonla/nonla-tunnel/${{ github.ref_name }}/.env.example
             cp .env.example .env
-            # edit .env: DOMAIN, AUTH_TOKEN, DASHBOARD_TOKEN, TRAEFIK_DYNAMIC_DIR
+            # edit .env: DOMAIN, AUTH_TOKEN, TRAEFIK_DYNAMIC_DIR (IMAGE_TAG=latest or a version)
             docker compose pull
             docker compose up -d
             ```
 
-            Image: [`phamvanquyit/zotunnel`](https://hub.docker.com/r/phamvanquyit/zotunnel) (`:latest` / `:main`)
-
-            Or one-liner:
-
-            ```bash
-            docker pull phamvanquyit/zotunnel:latest
-            ```
+            Image: `ghcr.io/devnonla/nonla-tunnel:${{ env.VERSION }}` (also `:latest`)
 
             ## Install client
 
             Prefer the one-liner from your server:
 
             ```bash
-            curl -sSL https://dashboard.YOUR_DOMAIN/install | bash
-            zotunnel config set --server YOUR_DOMAIN:6200 --token TOKEN
-            zotunnel http 3000
+            curl -sSL https://YOUR_DOMAIN/install | bash
+            # invite from: nonla-tunnel-server invite --label my-agent
+            nonla-tunnel enroll --server connect.YOUR_DOMAIN --invite nti_...
+            nonla-tunnel http 3000
             ```

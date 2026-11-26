@@ -1,7 +1,8 @@
-//! Zo Tunnel client — connects to server, accepts yamux streams, proxies to local service.
+//! Nonla Tunnel client — connects to server, accepts yamux streams, proxies to local service.
 
 use crate::config::ClientTlsConfig;
 use anyhow::{bail, Context, Result};
+use nonla_tunnel_protocol::*;
 use std::future::poll_fn;
 use std::sync::Arc;
 use tokio::io;
@@ -9,7 +10,24 @@ use tokio::net::TcpStream;
 use tokio::sync::watch;
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 use tokio_util::sync::CancellationToken;
-use zo_tunnel_protocol::*;
+
+/// Server rejected the token. Permanent — retrying cannot succeed.
+#[derive(Debug)]
+pub struct AuthError(pub String);
+
+impl std::fmt::Display for AuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Authentication failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for AuthError {}
+
+/// Rejections worth retrying (server-side trouble, not a bad credential/name).
+/// Everything else — invalid token, revoked, name taken, banned — is permanent.
+pub fn is_transient_auth_failure(message: &str) -> bool {
+    message.starts_with("Server error")
+}
 
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
@@ -31,6 +49,7 @@ pub struct Client {
     local_addr: String,
     client_id: String,
     token: String,
+    claim_key: String,
     tls_config: ClientTlsConfig,
 }
 
@@ -40,6 +59,7 @@ impl Client {
         local_addr: String,
         client_id: String,
         token: String,
+        claim_key: String,
         tls_config: ClientTlsConfig,
     ) -> Self {
         Self {
@@ -47,6 +67,7 @@ impl Client {
             local_addr,
             client_id,
             token,
+            claim_key,
             tls_config,
         }
     }
@@ -91,6 +112,44 @@ impl Client {
             self.run_session_with_status(tls_stream, status_tx).await
         } else {
             self.run_session_with_status(stream, status_tx).await
+        }
+    }
+
+    /// Trade a one-time invite for a permanent credential (see `EnrollReq`).
+    /// Only `server_addr` and `tls_config` of `self` are used.
+    pub async fn enroll(&self, invite: &str, label: Option<String>) -> Result<EnrollRes> {
+        let stream = TcpStream::connect(&self.server_addr)
+            .await
+            .with_context(|| format!("connect to {}", self.server_addr))?;
+        if self.tls_config.enabled {
+            let s = self.tls_connect(stream).await?;
+            Self::enroll_on(s, invite, label).await
+        } else {
+            Self::enroll_on(stream, invite, label).await
+        }
+    }
+
+    async fn enroll_on<S>(mut stream: S, invite: &str, label: Option<String>) -> Result<EnrollRes>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        let req = Message::EnrollReq(EnrollReq {
+            invite: invite.to_string(),
+            label,
+        });
+        write_message(&mut stream, &req).await?;
+        let res = tokio::time::timeout(std::time::Duration::from_secs(20), read_message(&mut stream))
+            .await
+            .map_err(|_| anyhow::anyhow!("timed out waiting for enrollment response"))?
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "server closed the connection during enrollment ({:#}) — is the server upgraded to a version with enrollment?",
+                    e
+                )
+            })?;
+        match res {
+            Message::EnrollRes(r) => Ok(r),
+            other => bail!("Expected EnrollRes, got {:?}", other),
         }
     }
 
@@ -160,6 +219,7 @@ impl Client {
             client_id: self.client_id.clone(),
             token: self.token.clone(),
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            claim_key: Some(self.claim_key.clone()),
         });
         write_message(&mut stream, &auth_req).await?;
 
@@ -169,7 +229,10 @@ impl Client {
         match auth_res {
             Message::AuthRes(res) => {
                 if !res.success {
-                    bail!("Authentication failed: {}", res.message);
+                    if is_transient_auth_failure(&res.message) {
+                        bail!("Server rejected the session temporarily: {}", res.message);
+                    }
+                    return Err(AuthError(res.message).into());
                 }
 
                 let host = res
@@ -302,5 +365,23 @@ impl tokio_rustls::rustls::client::danger::ServerCertVerifier for NoVerifier {
         tokio_rustls::rustls::crypto::ring::default_provider()
             .signature_verification_algorithms
             .supported_schemes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_transient_auth_failure;
+
+    #[test]
+    fn transient_vs_permanent_rejections() {
+        assert!(is_transient_auth_failure("Server error (temporary)"));
+        for permanent in [
+            "Invalid token",
+            "tunnel name 'a' is in use by another client",
+            "tunnel 'a' was disconnected by the operator; reconnect allowed in 60s",
+            "Invalid tunnel name: x",
+        ] {
+            assert!(!is_transient_auth_failure(permanent), "{permanent}");
+        }
     }
 }

@@ -3,18 +3,20 @@ name: Build Main
 on:
   push:
     branches: [main]
+    tags: ["v*"]
 
 concurrency:
-  group: build-main
+  group: build-main-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
+  packages: write   # push images to ghcr.io with GITHUB_TOKEN
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  IMAGE_NAME: zotunnel
+  IMAGE_NAME: nonla-tunnel
 
 jobs:
   binaries:
@@ -47,15 +49,15 @@ jobs:
         with:
           key: main-${{ matrix.target }}
 
-      - name: Build zotunnel client
-        run: cargo build --release --target ${{ matrix.target }} --bin zotunnel
+      - name: Build nonla-tunnel client
+        run: cargo build --release --target ${{ matrix.target }} --bin nonla-tunnel
 
       - name: Package binary
         run: |
-          BIN="target/${{ matrix.target }}/release/zotunnel"
-          TAR="zotunnel-${{ matrix.label }}.tar.gz"
-          tar -czf "$TAR" -C "target/${{ matrix.target }}/release" zotunnel
-          cp "$BIN" "zotunnel-${{ matrix.label }}"
+          BIN="target/${{ matrix.target }}/release/nonla-tunnel"
+          TAR="nonla-tunnel-${{ matrix.label }}.tar.gz"
+          tar -czf "$TAR" -C "target/${{ matrix.target }}/release" nonla-tunnel
+          cp "$BIN" "nonla-tunnel-${{ matrix.label }}"
           echo "📦 $TAR ($(du -h "$TAR" | cut -f1))"
 
       - name: Upload artifacts
@@ -64,7 +66,7 @@ jobs:
           name: binaries-${{ matrix.label }}
           path: |
             *.tar.gz
-            zotunnel-${{ matrix.label }}
+            nonla-tunnel-${{ matrix.label }}
           retention-days: 30
 
   docker:
@@ -85,16 +87,18 @@ jobs:
         run: |
           platform="${{ matrix.platform }}"
           echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
-          echo "IMAGE=${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}" >> "$GITHUB_ENV"
+          # GHCR image names must be lowercase.
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ env.IMAGE_NAME }}" >> "$GITHUB_ENV"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push by digest
         id: build
@@ -125,6 +129,9 @@ jobs:
     needs: docker
     runs-on: ubuntu-24.04
     steps:
+      - name: Prepare
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${{ env.IMAGE_NAME }}" >> "$GITHUB_ENV"
+
       - name: Download digests
         uses: actions/download-artifact@v8
         with:
@@ -135,26 +142,29 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.IMAGE }}
           tags: |
-            type=raw,value=main
+            type=raw,value=main,enable={{is_default_branch}}
             type=sha,prefix=sha-
-            type=raw,value=latest
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Create multi-arch manifest
         working-directory: /tmp/digests
         run: |
-          IMAGE_REF="${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}"
+          IMAGE_REF="${{ env.IMAGE }}"
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf "${IMAGE_REF}@sha256:%s " *)

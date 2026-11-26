@@ -7,59 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.0.5] - 2026-10-27
+## [0.1.0] - 2026-11-26
 
-### Fixed
-
-- Zombie / half-open sessions no longer block reconnect: same `client_id` always takes over (last writer wins), so a wedged registry slot cannot leave the public host on Traefik 404
-- Server shutdown no longer deletes `zo-tunnel-*.yml` routers, avoiding a public 404 window (and permanent 404 if reconnect then hits "already registered")
-- Traefik client route is rewritten on every successful register/takeover to repair a missing YAML
-
-## [0.0.4] - 2026-09-06
-
-### Fixed
-
-- Intermittent 502 after a tunnel drop: a reconnecting client can take over a stale session after two missed heartbeats instead of waiting ~75s for the old session to die
-- Traefik routes are no longer deleted on disconnect, so reconnects do not wait for a file-provider reload
-- A healthy duplicate client with the same name still cannot kick a live session
-
-## [0.0.3] - 2026-08-13
-
-### Fixed
-
-- Yamux sessions no longer drop under traffic: heartbeat I/O no longer blocks the connection driver
-
-## [0.0.2] - 2026-07-16
+Initial release of **Nonla Tunnel**: self-hosted, CLI-only HTTP tunnels for agents, behind your own Traefik.
 
 ### Added
 
-- Pre-release checks (`scripts/pre-release.sh` and Release workflow `preflight` gate)
-- Docker Hub deploy docs in README and GitHub Release notes
+- **Tunnels:** `nonla-tunnel http <port> --name <name> [-d]` exposes a local HTTP port at `https://<name>.<domain>`; `-d` returns once the URL is live (exit codes suited to agents); `status`, `stop`, `upgrade`, `uninstall`
+- **Server:** `nonla-tunnel-server start` (Docker image `ghcr.io/devnonla/nonla-tunnel`), writing Traefik file-provider routes per tunnel; `/install` script and `/download` client binaries on the apex domain
+- **TLS control channel** on `connect.<domain>:443` via a Traefik TCP router; plaintext ports bind to `127.0.0.1` only. The client uses TLS by default
+- **One-time enrollment invites:** `nonla-tunnel-server invite [--ttl 24h] [--label …]` creates a single-use, expiring `nti_…` code; `nonla-tunnel enroll` (or `curl -sSL https://<domain>/install | bash -s -- --invite …`) trades it for a per-client `ntc_…` credential — the only token the client stores
+- **Credential management:** `clients` lists credentials and pending invites; `revoke <c_…|i_…>` revokes a credential (live tunnels drop within ~15s) or deletes an invite; `token` prints the shared admin token
+- **Live sessions:** `sessions [--json]` lists connected tunnels (credential, label, real client IP, uptime, requests, bytes, health); `kick <name> [--ban 1m]` disconnects one; `release-name <name>` frees a name — all via a local `0600` admin socket
+- **Tunnel name ownership:** each name is bound to a per-name client claim key, so clients cannot take over each other's URL; claims expire after 30 days unused
+- Real client IPs on the control channel via PROXY protocol v2 from Traefik
+- Hourly housekeeping removes routers of tunnels idle for 24h and expired claims
+- Docker images on GitHub Container Registry, tagged per release (`0.1.0`, `0.1`, `latest`) and `main`; `IMAGE_TAG` selects the tag in `docker-compose.yml`
 
-### Changed
+### Security
 
-- Client binaries: drop Intel macOS (`darwin-amd64`); Apple Silicon only
-- Release workflow builds only after fmt/clippy/tests pass
+- Tunnel names and the domain are validated as DNS names before anything reaches Traefik YAML, rules or scripts
+- Server refuses to start without an admin token (≥16 chars); tokens compared in constant time; only SHA-256 hashes of invites, credentials and claim keys are stored (`0600` files)
+- Limits: 100 req/s and 128 concurrent requests per tunnel; 4 KB pre-auth messages; 256 pending auths (8 per IP); 5s auth timeout; wrong tokens delayed 1s; an IP is blocked 60s after 10 failures
+- Unknown hosts never reveal which tunnels exist
+- Install script, `scripts/install.sh` and `upgrade` verify SHA-256 checksums over HTTPS; upgrades unpack in a private random temp dir
 
-### Removed
-
-- Unused scripts: `build.sh`, `e2e_test.sh`, `release.sh`
-- Dependabot (temporarily disabled)
-
-## [0.0.1] - 2026-07-16
-
-### Added
-
-- Initial public release of Zo Tunnel
-- Self-hosted HTTP tunnel server with Traefik TLS integration
-- Client CLI (`zotunnel`) with foreground and background modes
-- Dashboard UI, `/install` and `/download` endpoints
-- Docker image publish to Docker Hub on `main`
-- Multi-platform client binaries (Linux/macOS, amd64/arm64)
-
-[Unreleased]: https://github.com/phamvanquyit/ZoTunnel/compare/v0.0.5...HEAD
-[0.0.5]: https://github.com/phamvanquyit/ZoTunnel/compare/v0.0.4...v0.0.5
-[0.0.4]: https://github.com/phamvanquyit/ZoTunnel/compare/v0.0.3...v0.0.4
-[0.0.3]: https://github.com/phamvanquyit/ZoTunnel/compare/v0.0.2...v0.0.3
-[0.0.2]: https://github.com/phamvanquyit/ZoTunnel/compare/v0.0.1...v0.0.2
-[0.0.1]: https://github.com/phamvanquyit/ZoTunnel/releases/tag/v0.0.1
+[Unreleased]: https://github.com/devnonla/nonla-tunnel/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/devnonla/nonla-tunnel/releases/tag/v0.1.0

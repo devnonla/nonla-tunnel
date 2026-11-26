@@ -1,4 +1,4 @@
-# Zo Tunnel Server Configuration
+# Nonla Tunnel Server Configuration
 
 control_port: 6200
 public_port: 6210
@@ -6,11 +6,7 @@ domain: "tunnel.example.com"
 
 auth:
   tokens:
-    - "your-secret-token-here"
-
-dashboard_auth:
-  token: "your-dashboard-token"
-  session_ttl_secs: 86400
+    - "replace-with-openssl-rand-hex-24"   # >= 16 chars, required
 
 rate_limit:
   requests_per_second: 100
@@ -22,7 +18,14 @@ traefik:
   entrypoint: "websecure"
   cert_resolver: "letsencrypt"
   service_url: "http://127.0.0.1:6210"
+  # control_address: "127.0.0.1:6200"   # backend for the connect.<domain> TLS router
+  proxy_protocol: true                  # pass real client IPs to the control channel
 
-clients_dir: "/var/lib/zo-tunnel/clients"
+# bind_addr: "127.0.0.1"   # default: 127.0.0.1 with Traefik, 0.0.0.0 without
+# claims_file: "/etc/nonla-tunnel/claims.json"            # default: next to this file
+# credentials_file: "/etc/nonla-tunnel/credentials.json"  # invites + issued credentials
+# admin_socket: "/etc/nonla-tunnel/admin.sock"            # used by `sessions` / `kick`
+
+clients_dir: "/var/lib/nonla-tunnel/clients"
 
 log_level: "info"

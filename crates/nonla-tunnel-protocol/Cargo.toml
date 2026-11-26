@@ -1,12 +1,11 @@
 [package]
-name = "zo-tunnel-protocol"
-version = "0.0.5"
+name = "nonla-tunnel-protocol"
+version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-homepage.workspace = true
-description = "Shared protocol types for Zo Tunnel"
+description = "Shared protocol types for Nonla Tunnel"
 
 [dependencies]
 tokio = { workspace = true }
@@ -16,3 +15,5 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
+sha2 = "0.10"
+getrandom = "0.2"

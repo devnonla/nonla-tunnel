@@ -20,5 +20,5 @@ Any alternative solutions or features you've considered.
 
 ## Additional Context
 
-- Is this related to a specific use case? (e.g., SSH tunneling, web development, CI/CD)
+- Is this related to a specific use case? (e.g., AI agents, web development, CI/CD)
 - Would you be willing to contribute a PR for this?

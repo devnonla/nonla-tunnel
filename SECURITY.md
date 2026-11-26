@@ -4,16 +4,13 @@
 
 | Version | Supported |
 |---------|-----------|
-| 0.0.x   | Yes       |
+| 0.1.x   | Yes       |
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability in Zo Tunnel, **do not open a public GitHub issue**.
+If you discover a security vulnerability in Nonla Tunnel, **do not open a public GitHub issue**.
 
-Report it privately via one of:
-
-1. [GitHub Security Advisories](https://github.com/phamvanquyit/ZoTunnel/security/advisories/new)
-2. Email: **security@zobite.com**
+Report it privately through [GitHub Security Advisories](https://github.com/devnonla/nonla-tunnel/security/advisories/new) ("Report a vulnerability").
 
 Please include:
 
@@ -24,9 +21,10 @@ Please include:
 
 ## Response Timeline
 
-- **Acknowledgment:** Within 48 hours
-- **Initial assessment:** Within 1 week
-- **Fix release:** Depends on severity, typically within 2 weeks for critical issues
+Nonla Tunnel is a personal project maintained by [devnonla](https://github.com/devnonla); responses are best effort:
+
+- **Acknowledgment:** usually within a few days
+- **Fix release:** prioritised by severity
 
 ## Scope
 
@@ -41,4 +39,4 @@ In scope:
 
 ## Thank You
 
-We appreciate responsible disclosure and will credit reporters in release notes unless you prefer to remain anonymous.
+Thanks for disclosing responsibly. Reporters are credited in release notes unless they prefer to stay anonymous.

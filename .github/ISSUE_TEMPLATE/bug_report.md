@@ -13,8 +13,8 @@ A clear description of what the bug is.
 ## To Reproduce
 
 Steps to reproduce the behavior:
-1. Run `zo-tunnel-server --...`
-2. Run `zo-tunnel-client --...`
+1. Server: `nonla-tunnel-server ...` (or Docker image tag)
+2. Client: `nonla-tunnel ...`
 3. Do '...'
 4. See error
 
@@ -30,8 +30,8 @@ What actually happened. Include error messages or logs if available.
 
 - **OS:** [e.g., Ubuntu 22.04, macOS 14]
 - **Architecture:** [e.g., amd64, arm64]
-- **Zo Tunnel version:** [e.g., v0.0.5]
-- **Install method:** [binary / cargo build / Docker]
+- **Nonla Tunnel version:** [e.g., v0.1.0]
+- **Install method:** [/install script / release binary / cargo build / ghcr.io image]
 
 ## Logs
 

@@ -1,20 +1,20 @@
-# Contributing to Zo Tunnel
+# Contributing to Nonla Tunnel
 
-Thank you for your interest in Zo Tunnel! 🚀
+Thank you for your interest in Nonla Tunnel! 🚀
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-- [Rust 1.75+](https://rustup.rs/)
+- [Rust](https://rustup.rs/) stable (pinned via `rust-toolchain.toml`)
 - Git
 
 ### Setup
 
 ```bash
 # Fork the repo on GitHub, then clone it
-git clone https://github.com/<your-username>/zo-tunnel.git
-cd zo-tunnel
+git clone https://github.com/<your-username>/nonla-tunnel.git
+cd nonla-tunnel
 
 # Build
 cargo build
@@ -29,11 +29,15 @@ cargo clippy --workspace -- -D warnings
 ### Local Dev
 
 ```bash
-# Start server (creates config on first run)
+# Terminal 1 — server on 127.0.0.1:6200/6210, no Traefik (config in target/dev/)
 make run-server
 
-# Connect a test client
+# Terminal 2 — point the client at it, then expose localhost:3000 as my-app
+make dev-client-config
 make run-client
+
+# Terminal 3
+curl -H 'Host: my-app.localhost' http://127.0.0.1:6210/
 ```
 
 ## 📝 Contribution Workflow
@@ -41,13 +45,13 @@ make run-client
 ### 1. Create an Issue first
 
 Before writing code, create or comment on a related issue:
-- **Bug?** → Create a [Bug Report](https://github.com/phamvanquyit/ZoTunnel/issues/new?template=bug_report.md)
-- **New feature?** → Create a [Feature Request](https://github.com/phamvanquyit/ZoTunnel/issues/new?template=feature_request.md)
+- **Bug?** → Create a [Bug Report](https://github.com/devnonla/nonla-tunnel/issues/new?template=bug_report.md)
+- **New feature?** → Create a [Feature Request](https://github.com/devnonla/nonla-tunnel/issues/new?template=feature_request.md)
 
 ### 2. Fork & Branch
 
 ```bash
-git clone https://github.com/<your-username>/zo-tunnel.git
+git clone https://github.com/<your-username>/nonla-tunnel.git
 git checkout -b fix/short-description
 ```
 
@@ -69,10 +73,10 @@ git checkout -b fix/short-description
 Use [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
-feat: add WebSocket tunnel support
+feat: add per-credential name quota
 fix: handle client disconnect during auth
-docs: update README with new architecture
-refactor: simplify port allocation logic
+docs: document invite flow
+refactor: simplify claim store
 test: add subdomain routing tests
 ```
 
@@ -86,23 +90,28 @@ test: add subdomain routing tests
 ## 🏗️ Project Structure
 
 ```
-zo-tunnel/
+nonla-tunnel/
 ├── crates/
-│   ├── zo-tunnel-protocol/     # Shared protocol (messages, encoding)
-│   ├── zo-tunnel-server/       # Server binary
+│   ├── nonla-tunnel-protocol/        # Wire protocol, name validation, self-update
+│   ├── nonla-tunnel-server/          # nonla-tunnel-server
 │   │   └── src/
-│   │       ├── main.rs         # CLI: start / stop / restart / status / upgrade / uninstall
-│   │       ├── config.rs       # Config with port & subdomain modes
-│   │       ├── server.rs       # Core: control, yamux, port allocation
-│   │       ├── proxy.rs        # HTTP proxy (subdomain mode)
-│   │       ├── dashboard.rs    # Dashboard API + UI
-│   │       ├── registry.rs     # Client registry
-│   │       └── metrics.rs      # Metrics + rate limiter
-│   └── zo-tunnel-client/       # Client binary
-├── web/                        # Dashboard UI (HTML/CSS/JS)
-├── configs/                    # Example YAML configs
-├── scripts/                    # install.sh, pre-release.sh
-└── .github/                    # Issue templates, PR template
+│   │       ├── main.rs               # CLI: start, token, invite, clients, revoke, sessions, kick, release-name
+│   │       ├── config.rs             # server.yaml + env overrides
+│   │       ├── server.rs             # Control channel: auth, enrollment, yamux, revocation, housekeeping
+│   │       ├── proxy.rs              # Public HTTP → tunnel (subdomain routing, limits)
+│   │       ├── install.rs            # /install script + /download binaries
+│   │       ├── admin.rs              # Local admin socket (sessions, kick, release-name)
+│   │       ├── credentials.rs        # Invites + issued client credentials
+│   │       ├── claims.rs             # Tunnel name ownership
+│   │       ├── proxy_protocol.rs     # PROXY v1/v2 from Traefik
+│   │       ├── traefik.rs            # Traefik dynamic YAML
+│   │       ├── registry.rs           # Connected sessions
+│   │       └── metrics.rs            # Metrics, rate limiter, auth throttle
+│   └── nonla-tunnel-client/          # nonla-tunnel (enroll, config, http, status, stop, …)
+├── configs/                          # Example YAML configs
+├── deploy/traefik/                   # Example Traefik static config
+├── scripts/                          # install.sh, pre-release.sh
+└── .github/                          # CI, release, image build, templates
 ```
 
 ## 🧪 Testing
@@ -122,6 +131,6 @@ cargo test --workspace
 
 ## ❓ Questions?
 
-Create a [Discussion](https://github.com/phamvanquyit/ZoTunnel/discussions) or open an Issue.
+Create a [Discussion](https://github.com/devnonla/nonla-tunnel/discussions) or open an Issue.
 
 Thank you for contributing! ❤️

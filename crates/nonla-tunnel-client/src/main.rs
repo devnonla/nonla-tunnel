@@ -15,8 +15,8 @@ mod config;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "zotunnel",
-    about = "zotunnel — expose a local HTTP port through your Zo Tunnel server",
+    name = "nonla-tunnel",
+    about = "nonla-tunnel — expose a local HTTP port through your Nonla Tunnel server",
     version
 )]
 struct Cli {
@@ -28,6 +28,8 @@ struct Cli {
 enum Command {
     /// Manage client configuration
     Config(ConfigCmd),
+    /// Enroll with a one-time invite; saves the issued credential (not the invite)
+    Enroll(EnrollArgs),
     /// Forward a local HTTP port (ngrok-style)
     Http(HttpArgs),
     /// Show config and running background tunnels
@@ -36,7 +38,7 @@ enum Command {
     Stop(StopArgs),
     /// Upgrade to the latest release
     Upgrade,
-    /// Uninstall zotunnel
+    /// Uninstall nonla-tunnel
     Uninstall(UninstallArgs),
 }
 
@@ -56,14 +58,41 @@ enum ConfigAction {
 
 #[derive(Parser, Debug)]
 struct ConfigSetArgs {
+    /// Server control address, e.g. connect.tunnel.example.com[:443]
     #[arg(long)]
     server: String,
     #[arg(long)]
     token: String,
+    /// Disable TLS (plaintext control channel; token sent in clear — localhost/dev only)
     #[arg(long)]
+    no_tls: bool,
+    /// Deprecated: TLS is on by default
+    #[arg(long, hide = true)]
     tls: bool,
     #[arg(long, default_value = "")]
     tls_server_name: String,
+    /// Accept any TLS certificate (insecure; testing only)
+    #[arg(long)]
+    tls_skip_verify: bool,
+}
+
+#[derive(Parser, Debug)]
+struct EnrollArgs {
+    /// Server control address, e.g. connect.tunnel.example.com[:443]
+    #[arg(long)]
+    server: String,
+    /// One-time invite code (nti_…) from `nonla-tunnel-server invite`
+    #[arg(long, env = "NONLA_INVITE")]
+    invite: String,
+    /// Label shown in the server's `clients` list (default: hostname)
+    #[arg(long)]
+    label: Option<String>,
+    /// Disable TLS (plaintext; localhost/dev only)
+    #[arg(long)]
+    no_tls: bool,
+    #[arg(long, default_value = "")]
+    tls_server_name: String,
+    /// Accept any TLS certificate (insecure; testing only)
     #[arg(long)]
     tls_skip_verify: bool,
 }
@@ -100,15 +129,16 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Config(cmd) => cmd_config(cmd),
+        Command::Enroll(args) => cmd_enroll(args).await,
         Command::Http(args) => cmd_http(args).await,
         Command::Status => cmd_status(),
         Command::Stop(args) => cmd_stop(args),
         Command::Upgrade => {
-            zo_tunnel_protocol::self_update::upgrade("zotunnel", env!("CARGO_PKG_VERSION"))
+            nonla_tunnel_protocol::self_update::upgrade("nonla-tunnel", env!("CARGO_PKG_VERSION"))
         }
-        Command::Uninstall(args) => zo_tunnel_protocol::self_update::uninstall(
-            "zotunnel",
-            zo_tunnel_protocol::self_update::Component::Client,
+        Command::Uninstall(args) => nonla_tunnel_protocol::self_update::uninstall(
+            "nonla-tunnel",
+            nonla_tunnel_protocol::self_update::Component::Client,
             args.yes,
             false,
         ),
@@ -141,7 +171,37 @@ fn is_pid_alive(pid: u32) -> bool {
     }
 }
 
+/// Whether `pid` is still our background tunnel `name` (guards against PID
+/// reuse: never signal a process that is not `nonla-tunnel ... --name <name> --daemon-child`).
+fn pid_is_tunnel(pid: u32, name: &str) -> bool {
+    let args: Vec<String> = if cfg!(target_os = "linux") {
+        match std::fs::read(format!("/proc/{}/cmdline", pid)) {
+            Ok(raw) => raw
+                .split(|b| *b == 0)
+                .map(|a| String::from_utf8_lossy(a).into_owned())
+                .collect(),
+            Err(_) => return false,
+        }
+    } else {
+        match ProcCommand::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+        {
+            Ok(o) => String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .map(String::from)
+                .collect(),
+            Err(_) => return false,
+        }
+    };
+    args.iter().any(|a| a == "--daemon-child")
+        && args.windows(2).any(|w| w[0] == "--name" && w[1] == name)
+}
+
 fn read_pid(name: &str) -> Result<Option<u32>> {
+    if nonla_tunnel_protocol::validate_client_id(name).is_err() {
+        return Ok(None);
+    }
     let path = pid_path(name)?;
     if !path.exists() {
         return Ok(None);
@@ -151,7 +211,7 @@ fn read_pid(name: &str) -> Result<Option<u32>> {
     if pid == 0 {
         return Ok(None);
     }
-    if is_pid_alive(pid) {
+    if is_pid_alive(pid) && pid_is_tunnel(pid, name) {
         Ok(Some(pid))
     } else {
         let _ = std::fs::remove_file(&path);
@@ -160,7 +220,7 @@ fn read_pid(name: &str) -> Result<Option<u32>> {
 }
 
 fn write_pid(name: &str, pid: u32) -> Result<()> {
-    std::fs::write(pid_path(name)?, format!("{}\n", pid))?;
+    config::write_private(&pid_path(name)?, format!("{}\n", pid).as_bytes())?;
     Ok(())
 }
 
@@ -184,11 +244,31 @@ fn list_running_tunnels() -> Result<Vec<(String, u32)>> {
 fn cmd_config(cmd: ConfigCmd) -> Result<()> {
     match cmd.action {
         ConfigAction::Set(args) => {
-            let cfg = config::ZotunnelConfig {
-                server: args.server,
+            if args.token.starts_with(nonla_tunnel_protocol::INVITE_PREFIX) {
+                anyhow::bail!(
+                    "that is a one-time invite, not a token. Run:\n  nonla-tunnel enroll --server {} --invite {}",
+                    args.server,
+                    args.token
+                );
+            }
+            let tls = !args.no_tls;
+            let server = config::normalize_server_addr(&args.server, tls);
+            if !tls && !config::is_loopback_host(&server) {
+                eprintln!(
+                    "⚠️  --no-tls: the token will be sent unencrypted to {}. Use TLS unless this is a trusted network.",
+                    server
+                );
+            }
+            if args.tls_skip_verify {
+                eprintln!(
+                    "⚠️  --tls-skip-verify: server certificate is NOT checked (MITM possible)."
+                );
+            }
+            let cfg = config::NonlaTunnelConfig {
+                server,
                 token: args.token,
                 tls: config::ClientTlsConfig {
-                    enabled: args.tls,
+                    enabled: tls,
                     server_name: args.tls_server_name,
                     skip_verify: args.tls_skip_verify,
                 },
@@ -200,7 +280,7 @@ fn cmd_config(cmd: ConfigCmd) -> Result<()> {
             Ok(())
         }
         ConfigAction::Show => {
-            let cfg = config::ZotunnelConfig::load()?;
+            let cfg = config::NonlaTunnelConfig::load()?;
             println!("server: {}", cfg.server);
             println!("token:  {}", cfg.masked_token());
             println!("tls:    {}", cfg.tls.enabled);
@@ -209,16 +289,89 @@ fn cmd_config(cmd: ConfigCmd) -> Result<()> {
     }
 }
 
+fn hostname_label() -> Option<String> {
+    std::env::var("HOSTNAME")
+        .ok()
+        .or_else(|| std::fs::read_to_string("/etc/hostname").ok())
+        .or_else(|| {
+            ProcCommand::new("hostname")
+                .output()
+                .ok()
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        })
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+}
+
+async fn cmd_enroll(args: EnrollArgs) -> Result<()> {
+    let invite = args.invite.trim().to_string();
+    if !invite.starts_with(nonla_tunnel_protocol::INVITE_PREFIX) {
+        anyhow::bail!(
+            "invite must start with '{}' (got something else — a token goes to `config set`)",
+            nonla_tunnel_protocol::INVITE_PREFIX
+        );
+    }
+    let tls = !args.no_tls;
+    let server = config::normalize_server_addr(&args.server, tls);
+    if !tls && !config::is_loopback_host(&server) {
+        eprintln!(
+            "⚠️  --no-tls: the invite and credential travel unencrypted to {}.",
+            server
+        );
+    }
+    if args.tls_skip_verify {
+        eprintln!("⚠️  --tls-skip-verify: server certificate is NOT checked (MITM possible).");
+    }
+    let tls_cfg = config::ClientTlsConfig {
+        enabled: tls,
+        server_name: args.tls_server_name,
+        skip_verify: args.tls_skip_verify,
+    };
+    let enroller = client::Client::new(
+        server.clone(),
+        String::new(),
+        String::new(),
+        String::new(),
+        String::new(),
+        tls_cfg.clone(),
+    );
+    let res = enroller
+        .enroll(&invite, args.label.or_else(hostname_label))
+        .await?;
+    let token = match (res.success, res.token) {
+        (true, Some(t)) if t.starts_with(nonla_tunnel_protocol::CREDENTIAL_PREFIX) => t,
+        (true, _) => anyhow::bail!("server returned no credential"),
+        (false, _) => return Err(client::AuthError(res.message).into()),
+    };
+    let cfg = config::NonlaTunnelConfig {
+        server,
+        token,
+        tls: tls_cfg,
+    };
+    cfg.save()?;
+    println!(
+        "Enrolled as {} — credential saved to {}",
+        res.client_ref.as_deref().unwrap_or("?"),
+        config::config_path()?.display()
+    );
+    println!("  server: {}", cfg.server);
+    println!("  token:  {}", cfg.masked_token());
+    println!("The invite is used up. Next: nonla-tunnel http 3000 --name my-app -d");
+    Ok(())
+}
+
 fn cmd_status() -> Result<()> {
-    match config::ZotunnelConfig::load() {
+    match config::NonlaTunnelConfig::load() {
         Ok(cfg) => {
-            println!("zotunnel v{}", env!("CARGO_PKG_VERSION"));
+            println!("nonla-tunnel v{}", env!("CARGO_PKG_VERSION"));
             println!("server: {}", cfg.server);
             println!("token:  {}", cfg.masked_token());
         }
         Err(_) => {
-            println!("zotunnel v{}", env!("CARGO_PKG_VERSION"));
-            println!("Not configured. Run: zotunnel config set --server HOST:6200 --token TOKEN");
+            println!("nonla-tunnel v{}", env!("CARGO_PKG_VERSION"));
+            println!(
+                "Not configured. Run: nonla-tunnel config set --server HOST:6200 --token TOKEN"
+            );
         }
     }
 
@@ -230,13 +383,15 @@ fn cmd_status() -> Result<()> {
         for (name, pid) in running {
             println!("  {}  pid={}", name, pid);
         }
-        println!("Stop: zotunnel stop <name>   or   zotunnel stop");
+        println!("Stop: nonla-tunnel stop <name>   or   nonla-tunnel stop");
     }
     Ok(())
 }
 
 fn cmd_stop(args: StopArgs) -> Result<()> {
     let targets: Vec<String> = if let Some(name) = args.name {
+        nonla_tunnel_protocol::validate_client_id(&name)
+            .map_err(|e| anyhow::anyhow!("invalid tunnel name '{}': {}", name, e))?;
         vec![name]
     } else {
         list_running_tunnels()?
@@ -269,7 +424,7 @@ fn cmd_stop(args: StopArgs) -> Result<()> {
 fn spawn_detached(args: &HttpArgs, client_id: &str) -> Result<()> {
     if read_pid(client_id)?.is_some() {
         anyhow::bail!(
-            "Tunnel '{}' is already running in background. Stop it with: zotunnel stop {}",
+            "Tunnel '{}' is already running in background. Stop it with: nonla-tunnel stop {}",
             client_id,
             client_id
         );
@@ -302,7 +457,7 @@ fn spawn_detached(args: &HttpArgs, client_id: &str) -> Result<()> {
         });
     }
 
-    let child = cmd.spawn().context("spawn background zotunnel")?;
+    let mut child = cmd.spawn().context("spawn background nonla-tunnel")?;
     let pid = child.id();
     write_pid(client_id, pid)?;
 
@@ -311,7 +466,9 @@ fn spawn_detached(args: &HttpArgs, client_id: &str) -> Result<()> {
     let mut offset = 0u64;
     let mut forwarding = None::<String>;
     while std::time::Instant::now() < deadline {
-        if !is_pid_alive(pid) {
+        // try_wait (not kill(pid, 0)): an exited child stays a zombie until reaped.
+        if matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
+            let _ = std::fs::remove_file(pid_path(client_id)?);
             let log_text = std::fs::read_to_string(log_path(client_id)?).unwrap_or_default();
             anyhow::bail!("Background tunnel exited early. Log:\n{}", log_text.trim());
         }
@@ -333,7 +490,7 @@ fn spawn_detached(args: &HttpArgs, client_id: &str) -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
 
-    println!("zotunnel v{}", env!("CARGO_PKG_VERSION"));
+    println!("nonla-tunnel v{}", env!("CARGO_PKG_VERSION"));
     if let Some(fwd) = forwarding {
         println!("Forwarding  {}", fwd);
     } else {
@@ -343,15 +500,17 @@ fn spawn_detached(args: &HttpArgs, client_id: &str) -> Result<()> {
         );
     }
     println!("Log:    {}", log_path(client_id)?.display());
-    println!("Stop:   zotunnel stop {}", client_id);
-    println!("Status: zotunnel status");
+    println!("Stop:   nonla-tunnel stop {}", client_id);
+    println!("Status: nonla-tunnel status");
     Ok(())
 }
 
 async fn cmd_http(args: HttpArgs) -> Result<()> {
-    let cfg = config::ZotunnelConfig::load()?;
+    let cfg = config::NonlaTunnelConfig::load()?;
     let local_addr = config::normalize_local_addr(&args.addr);
     let client_id = args.name.clone().unwrap_or_else(config::generate_name);
+    nonla_tunnel_protocol::validate_client_id(&client_id)
+        .map_err(|e| anyhow::anyhow!("invalid --name '{}': {}", client_id, e))?;
 
     if args.detach && !args.daemon_child {
         return spawn_detached(&args, &client_id);
@@ -364,11 +523,13 @@ async fn cmd_http(args: HttpArgs) -> Result<()> {
         .with_target(false)
         .init();
 
+    let claim_key = config::claim_key(&client_id)?;
     let client = client::Client::new(
         cfg.server.clone(),
         local_addr.clone(),
         client_id.clone(),
         cfg.token.clone(),
+        claim_key,
         cfg.tls.clone(),
     );
 
@@ -383,7 +544,7 @@ async fn cmd_http(args: HttpArgs) -> Result<()> {
     let mut printed = false;
     let quiet = args.daemon_child;
 
-    println!("zotunnel v{}", env!("CARGO_PKG_VERSION"));
+    println!("nonla-tunnel v{}", env!("CARGO_PKG_VERSION"));
     println!("Connecting to {} as '{}'...", cfg.server, client_id);
 
     let printer = tokio::spawn(async move {
@@ -412,6 +573,9 @@ async fn cmd_http(args: HttpArgs) -> Result<()> {
     result.context("tunnel session")
 }
 
+/// A session lasting at least this long resets the reconnect backoff.
+const STABLE_SESSION_SECS: u64 = 30;
+
 async fn run_with_reconnect(
     client: &client::Client,
     cancel: CancellationToken,
@@ -422,10 +586,16 @@ async fn run_with_reconnect(
         if cancel.is_cancelled() {
             return Ok(());
         }
-        match client
+        let started = std::time::Instant::now();
+        let outcome = client
             .run_cancellable(cancel.clone(), status_tx.clone())
-            .await
-        {
+            .await;
+        // A session that stayed up for a while was healthy: start over at 1s
+        // instead of keeping the 30s cap from earlier failures.
+        if started.elapsed() >= std::time::Duration::from_secs(STABLE_SESSION_SECS) {
+            backoff = 1;
+        }
+        match outcome {
             Ok(()) => {
                 if cancel.is_cancelled() {
                     return Ok(());
@@ -435,6 +605,10 @@ async fn run_with_reconnect(
             Err(e) => {
                 if cancel.is_cancelled() {
                     return Ok(());
+                }
+                if e.chain().any(|c| c.is::<client::AuthError>()) {
+                    eprintln!("Error: {:#}", e);
+                    return Err(e);
                 }
                 eprintln!("Error: {:#}. Reconnecting in {}s...", e, backoff);
             }

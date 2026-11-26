@@ -1,17 +1,16 @@
 services:
-  zo-tunnel:
-    image: ${DOCKER_IMAGE:-phamvanquyit/zotunnel}:main
+  nonla-tunnel:
+    image: ${DOCKER_IMAGE:-ghcr.io/devnonla/nonla-tunnel}:${IMAGE_TAG:-latest}
     build: .
     restart: unless-stopped
     network_mode: host
     environment:
-      ZO_DOMAIN: ${DOMAIN}
-      ZO_TOKEN: ${AUTH_TOKEN:-}
-      ZO_DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:-}
+      NONLA_DOMAIN: ${DOMAIN}
+      NONLA_TOKEN: ${AUTH_TOKEN:-}
       RUST_LOG: info
     volumes:
-      - zo_config:/etc/zo-tunnel
+      - nonla_config:/etc/nonla-tunnel
       - ${TRAEFIK_DYNAMIC_DIR}:/etc/traefik/dynamic
 
 volumes:
-  zo_config:
+  nonla_config:

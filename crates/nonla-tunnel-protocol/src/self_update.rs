@@ -9,14 +9,14 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const REPO: &str = "Zobite/zo-tunnel";
+const REPO: &str = "devnonla/nonla-tunnel";
 const SERVER_INSTALL_DIR: &str = "/usr/local/bin";
 
-/// Return the client install directory: `~/.zotunnel/bin/`
+/// Return the client install directory: `~/.nonla-tunnel/bin/`
 pub fn client_install_dir() -> anyhow::Result<PathBuf> {
     let home =
         std::env::var("HOME").map_err(|_| anyhow::anyhow!("HOME environment variable not set"))?;
-    Ok(PathBuf::from(home).join(".zotunnel").join("bin"))
+    Ok(PathBuf::from(home).join(".nonla-tunnel").join("bin"))
 }
 
 /// Detect the install directory from the currently running binary.
@@ -31,7 +31,7 @@ fn detect_install_dir(binary_name: &str) -> anyhow::Result<PathBuf> {
         }
     }
 
-    if binary_name == "zotunnel" || binary_name.contains("client") {
+    if binary_name == "nonla-tunnel" || binary_name.contains("client") {
         client_install_dir()
     } else {
         Ok(PathBuf::from(SERVER_INSTALL_DIR))
@@ -122,7 +122,7 @@ pub fn is_newer(current: &str, latest: &str) -> bool {
 
 /// Self-upgrade the binary by downloading the latest release from GitHub.
 ///
-/// * `binary_name` — e.g. "zo-tunnel-server" or "zo-tunnel-client"
+/// * `binary_name` — e.g. "nonla-tunnel-server" or "nonla-tunnel-client"
 /// * `current_version` — e.g. "0.4.1" (from `env!("CARGO_PKG_VERSION")`)
 pub fn upgrade(binary_name: &str, current_version: &str) -> anyhow::Result<()> {
     let current_tag = format!("v{current_version}");
@@ -148,7 +148,14 @@ pub fn upgrade(binary_name: &str, current_version: &str) -> anyhow::Result<()> {
     let tar_path = tmp_dir.join(&tarball);
 
     let status = Command::new("curl")
-        .args(["-fsSL", "-o", tar_path.to_str().unwrap(), &url])
+        .args([
+            "-fsSL",
+            "--proto",
+            "=https",
+            "-o",
+            tar_path.to_str().unwrap(),
+            &url,
+        ])
         .status()
         .map_err(|e| anyhow::anyhow!("Failed to run curl: {e}"))?;
 
@@ -158,6 +165,33 @@ pub fn upgrade(binary_name: &str, current_version: &str) -> anyhow::Result<()> {
              You can build from source: cargo install --git https://github.com/{REPO} {binary_name}"
         );
     }
+
+    // Verify against the release's SHA256SUMS.txt before touching anything.
+    let sums_path = tmp_dir.join("SHA256SUMS.txt");
+    let sums_url =
+        format!("https://github.com/{REPO}/releases/download/{latest_tag}/SHA256SUMS.txt");
+    let status = Command::new("curl")
+        .args([
+            "-fsSL",
+            "--proto",
+            "=https",
+            "-o",
+            sums_path.to_str().unwrap(),
+            &sums_url,
+        ])
+        .status()
+        .map_err(|e| anyhow::anyhow!("Failed to run curl: {e}"))?;
+    if !status.success() {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        anyhow::bail!("Could not download SHA256SUMS.txt for {latest_tag} — refusing to install an unverified binary");
+    }
+    let sums = std::fs::read_to_string(&sums_path)?;
+    let data = std::fs::read(&tar_path)?;
+    if let Err(e) = verify_checksum(&sums, &tarball, &data) {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(e);
+    }
+    ok("Checksum verified");
 
     // Extract
     let status = Command::new("tar")
@@ -178,7 +212,7 @@ pub fn upgrade(binary_name: &str, current_version: &str) -> anyhow::Result<()> {
         anyhow::bail!("Binary not found in tarball: {binary_name}");
     }
 
-    // Detect install dir from running binary (client: ~/.zo-tunnel/bin, server: /usr/local/bin)
+    // Detect install dir from running binary (client: ~/.nonla-tunnel/bin, server: /usr/local/bin)
     let install_dir = detect_install_dir(binary_name)?;
     std::fs::create_dir_all(&install_dir)?;
     let install_path = install_dir.join(binary_name);
@@ -193,7 +227,7 @@ pub fn upgrade(binary_name: &str, current_version: &str) -> anyhow::Result<()> {
     println!();
     if binary_name.contains("server") {
         println!("  ▸ Restart the service to use the new version:");
-        println!("    zo-tunnel-server restart");
+        println!("    nonla-tunnel-server restart");
     } else {
         println!("  ▸ Reconnect the client to use the new version.");
     }
@@ -215,7 +249,7 @@ pub enum Component {
 
 /// Uninstall the binary and associated files.
 ///
-/// * `binary_name` — e.g. "zo-tunnel-server" or "zo-tunnel-client"
+/// * `binary_name` — e.g. "nonla-tunnel-server" or "nonla-tunnel-client"
 /// * `component` — Server or Client (determines extra cleanup)
 /// * `yes` — skip confirmation prompt
 /// * `keep_config` — if true, preserve config files (server only)
@@ -235,16 +269,16 @@ pub fn uninstall(
 
     match component {
         Component::Server => {
-            println!("  • Stop and disable the zo-tunnel systemd service");
+            println!("  • Stop and disable the nonla-tunnel systemd service");
             println!("  • Remove {}", install_path.display());
             if !keep_config {
-                println!("  • Remove config directory /etc/zo-tunnel/");
+                println!("  • Remove config directory /etc/nonla-tunnel/");
             }
             println!("  • Remove systemd service file");
         }
         Component::Client => {
             println!("  • Remove {}", install_path.display());
-            println!("  • Remove ~/.zotunnel/ (config + binary dir)");
+            println!("  • Remove ~/.nonla-tunnel/ (config + binary dir)");
         }
     }
     println!();
@@ -261,16 +295,16 @@ pub fn uninstall(
 
     // Server: stop and remove systemd service
     if matches!(component, Component::Server) {
-        info("Stopping zo-tunnel service...");
+        info("Stopping nonla-tunnel service...");
         let _ = Command::new("sudo")
-            .args(["systemctl", "stop", "zo-tunnel"])
+            .args(["systemctl", "stop", "nonla-tunnel"])
             .status();
         let _ = Command::new("sudo")
-            .args(["systemctl", "disable", "zo-tunnel"])
+            .args(["systemctl", "disable", "nonla-tunnel"])
             .status();
 
         info("Removing systemd service...");
-        let service_path = Path::new("/etc/systemd/system/zo-tunnel.service");
+        let service_path = Path::new("/etc/systemd/system/nonla-tunnel.service");
         if service_path.exists() {
             remove_with_sudo(service_path)?;
             let _ = Command::new("sudo")
@@ -291,7 +325,7 @@ pub fn uninstall(
 
     // Server: remove config
     if matches!(component, Component::Server) && !keep_config {
-        let config_dirs = ["/etc/zo-tunnel"];
+        let config_dirs = ["/etc/nonla-tunnel"];
         for dir in &config_dirs {
             let p = Path::new(dir);
             if p.exists() {
@@ -302,20 +336,20 @@ pub fn uninstall(
         }
     }
 
-    // Client: remove ~/.zotunnel
+    // Client: remove ~/.nonla-tunnel
     if matches!(component, Component::Client) && !keep_config {
         if let Ok(home) = std::env::var("HOME") {
-            let dir = PathBuf::from(home).join(".zotunnel");
+            let dir = PathBuf::from(home).join(".nonla-tunnel");
             if dir.exists() {
                 info(&format!("Removing {}...", dir.display()));
                 let _ = std::fs::remove_dir_all(&dir);
-                ok("~/.zotunnel removed");
+                ok("~/.nonla-tunnel removed");
             }
         }
     }
 
     println!();
-    ok(&format!("Zo Tunnel {binary_name} has been uninstalled."));
+    ok(&format!("Nonla Tunnel {binary_name} has been uninstalled."));
     println!();
 
     Ok(())
@@ -323,14 +357,14 @@ pub fn uninstall(
 
 // ─── Systemd service management ──────────────────────────────────
 
-const SERVICE_NAME: &str = "zo-tunnel";
-const SERVICE_PATH: &str = "/etc/systemd/system/zo-tunnel.service";
+const SERVICE_NAME: &str = "nonla-tunnel";
+const SERVICE_PATH: &str = "/etc/systemd/system/nonla-tunnel.service";
 
 /// Generate the systemd unit file content.
 fn systemd_unit_content(binary_path: &str) -> String {
     format!(
         "[Unit]\n\
-         Description=Zo Tunnel Server\n\
+         Description=Nonla Tunnel Server\n\
          After=network.target\n\
          \n\
          [Service]\n\
@@ -346,10 +380,10 @@ fn systemd_unit_content(binary_path: &str) -> String {
     )
 }
 
-/// Install and enable the systemd service for zo-tunnel-server.
+/// Install and enable the systemd service for nonla-tunnel-server.
 /// Creates the service file and runs `systemctl daemon-reload && enable`.
 pub fn install_systemd_service() -> anyhow::Result<()> {
-    let binary_path = format!("{}/zo-tunnel-server", SERVER_INSTALL_DIR);
+    let binary_path = format!("{}/nonla-tunnel-server", SERVER_INSTALL_DIR);
 
     // Also accept the binary at the current executable path
     let exec_path = std::env::current_exe()
@@ -398,7 +432,7 @@ pub fn install_systemd_service() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Start the zo-tunnel systemd service.
+/// Start the nonla-tunnel systemd service.
 pub fn start_service() -> anyhow::Result<()> {
     let status = Command::new("sudo")
         .args(["systemctl", "start", SERVICE_NAME])
@@ -410,7 +444,7 @@ pub fn start_service() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Stop the zo-tunnel systemd service.
+/// Stop the nonla-tunnel systemd service.
 pub fn stop_service() -> anyhow::Result<()> {
     let status = Command::new("sudo")
         .args(["systemctl", "stop", SERVICE_NAME])
@@ -422,7 +456,7 @@ pub fn stop_service() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Restart the zo-tunnel systemd service.
+/// Restart the nonla-tunnel systemd service.
 pub fn restart_service() -> anyhow::Result<()> {
     let status = Command::new("sudo")
         .args(["systemctl", "restart", SERVICE_NAME])
@@ -434,7 +468,7 @@ pub fn restart_service() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Check if the zo-tunnel systemd service is active.
+/// Check if the nonla-tunnel systemd service is active.
 pub fn is_service_active() -> bool {
     Command::new("systemctl")
         .args(["is-active", "--quiet", SERVICE_NAME])
@@ -450,18 +484,42 @@ pub fn is_service_installed() -> bool {
 
 // ─── File helpers ────────────────────────────────────────────────
 
-/// Create a temporary directory inside /tmp.
+/// Create a fresh private (0700) temporary directory with an unpredictable
+/// name. `create_dir` (not `create_dir_all`) fails if the path already
+/// exists, so another local user cannot pre-create it and swap the binary
+/// before it is copied (possibly with sudo).
 fn tempdir() -> anyhow::Result<PathBuf> {
-    let name = format!(
-        "zo-tunnel-upgrade-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-    );
-    let path = std::env::temp_dir().join(name);
-    std::fs::create_dir_all(&path)?;
+    let mut rnd = [0u8; 16];
+    getrandom::getrandom(&mut rnd).map_err(|e| anyhow::anyhow!("getrandom: {e}"))?;
+    let suffix: String = rnd.iter().map(|b| format!("{:02x}", b)).collect();
+    let path = std::env::temp_dir().join(format!("nonla-tunnel-upgrade-{suffix}"));
+    let mut builder = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&path)?;
     Ok(path)
+}
+
+/// Check `data` against the `file`'s entry in a `sha256sum`-format listing.
+fn verify_checksum(sums: &str, file: &str, data: &[u8]) -> anyhow::Result<()> {
+    let want = sums
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.split_whitespace();
+            let hash = it.next()?;
+            let name = it.next()?.trim_start_matches('*');
+            (name == file).then(|| hash.to_ascii_lowercase())
+        })
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("{file} is not listed in SHA256SUMS.txt"))?;
+    let got = crate::sha256_hex(data);
+    if want != got {
+        anyhow::bail!("Checksum mismatch for {file}: expected {want}, got {got}");
+    }
+    Ok(())
 }
 
 /// Copy file, falling back to sudo if permission denied.
@@ -568,6 +626,30 @@ mod tests {
         assert!(is_newer("v0.4.1", "v0.5.0"));
         assert!(!is_newer("v0.5.0", "v0.4.1"));
         assert!(!is_newer("v0.4.1", "v0.4.1"));
+    }
+
+    #[test]
+    fn test_verify_checksum() {
+        let h = crate::sha256_hex(b"bin");
+        let sums = format!("deadbeef  other.tar.gz\n{h}  nonla-tunnel-v1-linux-amd64.tar.gz\n");
+        assert!(verify_checksum(&sums, "nonla-tunnel-v1-linux-amd64.tar.gz", b"bin").is_ok());
+        assert!(verify_checksum(&sums, "nonla-tunnel-v1-linux-amd64.tar.gz", b"evil").is_err());
+        assert!(verify_checksum(&sums, "missing.tar.gz", b"bin").is_err());
+    }
+
+    #[test]
+    fn test_tempdir_is_private_and_unique() {
+        let a = tempdir().unwrap();
+        let b = tempdir().unwrap();
+        assert_ne!(a, b);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&a).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700);
+        }
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&b);
     }
 
     #[test]

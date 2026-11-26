@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-26
+
 ### Added
 
 - Prebuilt clients for **every major platform**: Linux x86_64/arm64 (static musl — runs on any distro incl. Alpine), macOS Apple Silicon/Intel, Windows x86_64/arm64
@@ -48,5 +50,6 @@ Initial release of **Nonla Tunnel**: self-hosted, CLI-only HTTP tunnels for agen
 - Unknown hosts never reveal which tunnels exist
 - Install script, `scripts/install.sh` and `upgrade` verify SHA-256 checksums over HTTPS; upgrades unpack in a private random temp dir
 
-[Unreleased]: https://github.com/devnonla/nonla-tunnel/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/devnonla/nonla-tunnel/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/devnonla/nonla-tunnel/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/devnonla/nonla-tunnel/releases/tag/v0.1.0

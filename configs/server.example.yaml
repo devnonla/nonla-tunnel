@@ -21,6 +21,11 @@ traefik:
   # control_address: "127.0.0.1:6200"   # backend for the connect.<domain> TLS router
   proxy_protocol: true                  # pass real client IPs to the control channel
 
+# Peers whose PROXY protocol header is trusted besides loopback. Set this when Traefik
+# is NOT on the same host, e.g. a Docker Swarm service on an overlay network.
+# Use the narrowest range that contains only Traefik: anything in it can fake client IPs.
+# trusted_proxies: ["10.0.1.0/24"]
+
 # bind_addr: "127.0.0.1"   # default: 127.0.0.1 with Traefik, 0.0.0.0 without
 # claims_file: "/etc/nonla-tunnel/claims.json"            # default: next to this file
 # credentials_file: "/etc/nonla-tunnel/credentials.json"  # invites + issued credentials

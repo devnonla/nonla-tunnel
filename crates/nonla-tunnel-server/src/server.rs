@@ -297,6 +297,8 @@ pub(crate) struct ControlCtx {
     /// client_id → refuse reconnects until this instant (set by `kick --ban`).
     pub bans: dashmap::DashMap<String, std::time::Instant>,
     pub auth_limiter: AuthLimiter,
+    /// Parsed `trusted_proxies`.
+    pub trusted_proxies: Vec<crate::proxy_protocol::Cidr>,
     pub preauth: Arc<tokio::sync::Semaphore>,
     /// Pending (pre-auth) connections per real client IP.
     pub preauth_per_ip: Arc<dashmap::DashMap<std::net::IpAddr, usize>>,
@@ -415,6 +417,7 @@ impl Server {
         let domain = &self.config.domain;
         self.config.check_domain()?;
         self.config.check_auth()?;
+        let trusted_proxies = crate::proxy_protocol::parse_trusted(&self.config.trusted_proxies)?;
         let bind = self.config.effective_bind_addr();
 
         let claims = ClaimStore::load(self.config.claims_file.as_ref().map(Into::into))
@@ -485,6 +488,7 @@ impl Server {
                 .map(|p| CredentialStore::new(p.into())),
             bans: dashmap::DashMap::new(),
             auth_limiter: AuthLimiter::new(),
+            trusted_proxies,
             preauth: Arc::new(tokio::sync::Semaphore::new(MAX_PREAUTH_CONNECTIONS)),
             preauth_per_ip: Arc::new(dashmap::DashMap::new()),
         });
@@ -610,7 +614,11 @@ impl Server {
                         {
                             match tokio::time::timeout(
                                 Duration::from_secs(AUTH_TIMEOUT_SECS),
-                                crate::proxy_protocol::read_client_addr(&mut stream, peer),
+                                crate::proxy_protocol::read_client_addr(
+                                    &mut stream,
+                                    peer,
+                                    &ctx.trusted_proxies,
+                                ),
                             )
                             .await
                             {

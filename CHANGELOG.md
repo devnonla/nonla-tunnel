@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-28
+
+### Added
+
+- `trusted_proxies` server option (CIDR ranges/IPs): PROXY protocol headers are now also trusted from these peers, besides loopback. Lets the server run behind Traefik on another host or a Docker Swarm overlay network and still see real client IPs
+
 ## [0.2.0] - 2026-11-26
 
 ### Added
@@ -50,6 +56,7 @@ Initial release of **Nonla Tunnel**: self-hosted, CLI-only HTTP tunnels for agen
 - Unknown hosts never reveal which tunnels exist
 - Install script, `scripts/install.sh` and `upgrade` verify SHA-256 checksums over HTTPS; upgrades unpack in a private random temp dir
 
-[Unreleased]: https://github.com/devnonla/nonla-tunnel/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/devnonla/nonla-tunnel/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/devnonla/nonla-tunnel/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/devnonla/nonla-tunnel/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/devnonla/nonla-tunnel/releases/tag/v0.1.0

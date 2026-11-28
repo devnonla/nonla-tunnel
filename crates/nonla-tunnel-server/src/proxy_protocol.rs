@@ -5,8 +5,10 @@
 //! server uses for session listings and per-IP auth throttling.
 //!
 //! The header is only honoured from loopback peers (where Traefik runs) and
-//! is optional there, so local direct clients keep working. From any other
-//! peer it is never parsed — a remote client cannot spoof its address.
+//! from peers inside the configured `trusted_proxies` CIDR ranges (e.g. a
+//! Traefik container on a Docker Swarm overlay network). It is optional
+//! there, so direct clients keep working. From any other peer it is never
+//! parsed — a remote client cannot spoof its address.
 
 use anyhow::{bail, Context, Result};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -19,9 +21,71 @@ const V1_PREFIX: &[u8] = b"PROXY ";
 const V1_MAX: usize = 107;
 const HEADER_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Whether this peer may send a PROXY header.
-pub fn trusted_peer(peer: &SocketAddr) -> bool {
-    peer.ip().is_loopback()
+/// An IP range in CIDR notation (`10.0.0.0/8`, `fd00::/8`, or a bare IP).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cidr {
+    net: IpAddr,
+    prefix: u8,
+}
+
+impl Cidr {
+    pub fn parse(s: &str) -> Result<Self> {
+        let s = s.trim();
+        let (ip, prefix) = match s.split_once('/') {
+            Some((ip, p)) => (ip, Some(p)),
+            None => (s, None),
+        };
+        let net: IpAddr = ip
+            .parse()
+            .with_context(|| format!("trusted_proxies: invalid IP in {s:?}"))?;
+        let max = if net.is_ipv4() { 32 } else { 128 };
+        let prefix = match prefix {
+            Some(p) => p
+                .parse::<u8>()
+                .ok()
+                .filter(|p| *p <= max)
+                .with_context(|| format!("trusted_proxies: invalid prefix in {s:?}"))?,
+            None => max,
+        };
+        Ok(Self { net, prefix })
+    }
+
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        // An IPv4-mapped IPv6 peer (::ffff:a.b.c.d) is matched as IPv4.
+        let ip = match ip {
+            IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
+            v4 => v4,
+        };
+        match (self.net, ip) {
+            (IpAddr::V4(n), IpAddr::V4(a)) => {
+                mask_eq(u32::from(n) as u128, u32::from(a) as u128, 32, self.prefix)
+            }
+            (IpAddr::V6(n), IpAddr::V6(a)) => {
+                mask_eq(u128::from(n), u128::from(a), 128, self.prefix)
+            }
+            _ => false,
+        }
+    }
+}
+
+fn mask_eq(a: u128, b: u128, bits: u32, prefix: u8) -> bool {
+    if prefix == 0 {
+        return true;
+    }
+    let shift = bits - prefix as u32;
+    (a >> shift) == (b >> shift)
+}
+
+/// Parse the `trusted_proxies` config list.
+pub fn parse_trusted(list: &[String]) -> Result<Vec<Cidr>> {
+    list.iter().map(|s| Cidr::parse(s)).collect()
+}
+
+/// Whether this peer may send a PROXY header: loopback, or inside one of
+/// the configured `trusted` ranges.
+pub fn trusted_peer(peer: &SocketAddr, trusted: &[Cidr]) -> bool {
+    let ip = peer.ip();
+    ip.is_loopback() || trusted.iter().any(|c| c.contains(ip))
 }
 
 /// Peek until at least `n` bytes are buffered (or the peer stops sending).
@@ -43,8 +107,12 @@ async fn peek_n(stream: &TcpStream, buf: &mut [u8], n: usize) -> Result<usize> {
 
 /// Consume a PROXY header if one is present and the peer is trusted.
 /// Returns the real client address (or `peer` when there is no header).
-pub async fn read_client_addr(stream: &mut TcpStream, peer: SocketAddr) -> Result<SocketAddr> {
-    if !trusted_peer(&peer) {
+pub async fn read_client_addr(
+    stream: &mut TcpStream,
+    peer: SocketAddr,
+    trusted: &[Cidr],
+) -> Result<SocketAddr> {
+    if !trusted_peer(&peer, trusted) {
         return Ok(peer);
     }
     let mut buf = [0u8; 16];
@@ -196,7 +264,7 @@ mod tests {
         msg.extend_from_slice(&[198, 51, 100, 9, 127, 0, 0, 1, 0x9c, 0x40, 0x01, 0xbb]);
         msg.extend_from_slice(&[0x01, 0x01, 0xAA]); // our protocol bytes follow
         c.write_all(&msg).await.unwrap();
-        let addr = read_client_addr(&mut s, peer).await.unwrap();
+        let addr = read_client_addr(&mut s, peer, &[]).await.unwrap();
         assert_eq!(addr, "198.51.100.9:40000".parse().unwrap());
         let mut rest = [0u8; 3];
         s.read_exact(&mut rest).await.unwrap();
@@ -207,7 +275,7 @@ mod tests {
     async fn no_header_leaves_stream_untouched() {
         let (mut c, mut s, peer) = pair().await;
         c.write_all(&[0x01, 0x01, 0x00]).await.unwrap();
-        assert_eq!(read_client_addr(&mut s, peer).await.unwrap(), peer);
+        assert_eq!(read_client_addr(&mut s, peer, &[]).await.unwrap(), peer);
         let mut rest = [0u8; 3];
         s.read_exact(&mut rest).await.unwrap();
         assert_eq!(rest, [0x01, 0x01, 0x00]);
@@ -215,7 +283,62 @@ mod tests {
 
     #[test]
     fn untrusted_peer_never_parsed() {
-        assert!(!trusted_peer(&"203.0.113.1:1".parse().unwrap()));
-        assert!(trusted_peer(&lo()));
+        assert!(!trusted_peer(&"203.0.113.1:1".parse().unwrap(), &[]));
+        assert!(trusted_peer(&lo(), &[]));
+        // An overlay peer is untrusted unless its range is configured.
+        let overlay: SocketAddr = "10.0.3.7:1".parse().unwrap();
+        assert!(!trusted_peer(&overlay, &[]));
+    }
+
+    #[test]
+    fn trusted_proxies_cidr() {
+        let t =
+            parse_trusted(&["10.0.0.0/8".into(), "172.18.0.5".into(), "fd00::/8".into()]).unwrap();
+        let ok = |s: &str| trusted_peer(&s.parse().unwrap(), &t);
+        assert!(ok("10.0.3.7:1"));
+        assert!(ok("10.255.255.255:1"));
+        assert!(!ok("11.0.0.1:1"));
+        assert!(ok("172.18.0.5:1"));
+        assert!(!ok("172.18.0.6:1"));
+        assert!(ok("[fd12::1]:1"));
+        assert!(!ok("[fe80::1]:1"));
+        assert!(ok("[::ffff:10.1.2.3]:1"), "v4-mapped peer");
+        assert!(!ok("203.0.113.1:1"));
+        // /0 trusts everything (allowed, but the operator asked for it).
+        assert!(Cidr::parse("0.0.0.0/0")
+            .unwrap()
+            .contains("8.8.8.8".parse().unwrap()));
+        assert!(Cidr::parse("10.0.0.0/33").is_err());
+        assert!(Cidr::parse("nope").is_err());
+        assert!(Cidr::parse("10.0.0.0/x").is_err());
+    }
+
+    #[tokio::test]
+    async fn header_parsed_from_configured_range() {
+        let (mut c, mut s, peer) = pair().await; // peer is 127.0.0.1 here
+        let _ = peer;
+        // Pretend the peer is an overlay address.
+        let overlay: SocketAddr = "10.0.3.7:5000".parse().unwrap();
+        let trusted = parse_trusted(&["10.0.0.0/8".into()]).unwrap();
+        let mut msg = V2_SIG.to_vec();
+        msg.extend_from_slice(&[0x21, 0x11, 0x00, 0x0c]);
+        msg.extend_from_slice(&[198, 51, 100, 9, 10, 0, 3, 7, 0x9c, 0x40, 0x01, 0xbb]);
+        c.write_all(&msg).await.unwrap();
+        let addr = read_client_addr(&mut s, overlay, &trusted).await.unwrap();
+        assert_eq!(addr, "198.51.100.9:40000".parse().unwrap());
+    }
+
+    #[tokio::test]
+    async fn header_ignored_from_unconfigured_overlay_peer() {
+        let (mut c, mut s, _) = pair().await;
+        let overlay: SocketAddr = "10.0.3.7:5000".parse().unwrap();
+        let mut msg = V2_SIG.to_vec();
+        msg.extend_from_slice(&[0x21, 0x11, 0x00, 0x0c]);
+        msg.extend_from_slice(&[198, 51, 100, 9, 10, 0, 3, 7, 0x9c, 0x40, 0x01, 0xbb]);
+        c.write_all(&msg).await.unwrap();
+        assert_eq!(
+            read_client_addr(&mut s, overlay, &[]).await.unwrap(),
+            overlay
+        );
     }
 }

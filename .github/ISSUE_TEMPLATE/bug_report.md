@@ -30,7 +30,7 @@ What actually happened. Include error messages or logs if available.
 
 - **OS:** [e.g., Ubuntu 22.04, macOS 14]
 - **Architecture:** [e.g., amd64, arm64]
-- **Nonla Tunnel version:** [e.g., v0.2.0]
+- **Nonla Tunnel version:** [e.g., v0.2.1]
 - **Install method:** [/install script / release binary / cargo build / ghcr.io image]
 
 ## Logs

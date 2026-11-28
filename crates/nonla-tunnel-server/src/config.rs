@@ -78,6 +78,13 @@ pub struct ServerConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bind_addr: Option<String>,
 
+    /// Extra peers (CIDR ranges or IPs) whose PROXY protocol header is
+    /// trusted, besides loopback. Needed when Traefik is not on the same host,
+    /// e.g. a Docker Swarm overlay network: `["10.0.0.0/8"]`. Keep it as
+    /// narrow as possible — anything in these ranges can claim any client IP.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trusted_proxies: Vec<String>,
+
     /// Tunnel name claims file. Unset = `claims.json` next to the config file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claims_file: Option<String>,
@@ -143,6 +150,7 @@ impl Default for ServerConfig {
             traefik: crate::traefik::TraefikConfig::default(),
             log_level: default_log_level(),
             bind_addr: None,
+            trusted_proxies: Vec::new(),
             claims_file: None,
             credentials_file: None,
             admin_socket: None,
